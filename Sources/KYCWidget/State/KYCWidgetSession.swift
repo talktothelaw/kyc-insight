@@ -235,22 +235,47 @@ public final class KYCWidgetSession: ObservableObject {
 
     private func validateCurrentSection() -> Bool {
         guard let section = currentSection else { return true }
-        var errors: [String: String] = [:]
-        for field in section.fields where field.required {
-            let value = values[field.id]
-            let isEmpty: Bool = {
-                switch value {
-                case .none, .some(.null): return true
-                case .some(.string(let s)): return s.trimmingCharacters(in: .whitespaces).isEmpty
-                case .some(.array(let a)): return a.isEmpty
-                case .some(.object(let o)): return o.isEmpty
-                default: return false
+        // Mirror any sub-field writes into their parent sysSelect's
+        // composite BEFORE running validation. Sub-field renderers
+        // (BvnFieldView, ConsentFieldView, FileFieldView, etc.) write to
+        // session.values[subField.id] at the top level — they don't
+        // know they're nested inside a sysSelect. The web's
+        // SysSelectField intercepts the sub-field's onChange to route
+        // into the composite; iOS doesn't have that interception, so we
+        // sync here. Without this, validation and BuildSubmission would
+        // both see an empty `composite.values` dict — the user would
+        // verify BVN successfully, tap Continue, and the backend would
+        // reject with "KYC payload cannot be empty. Error Code: 101".
+        mirrorSysSelectSubValues(in: section)
+        // Per-kind validation in SectionValidator — matches the web's
+        // engine/processing/validate.ts behaviour 1:1 so the same
+        // backend schema validates identically on both clients (file
+        // uploads checked for `fileId`, consent fields for
+        // `consentAcceptanceId`, sysSelect recurses into sub-fields,
+        // email/url/number/time format checks, etc.).
+        fieldErrors = SectionValidator.validate(section: section, values: values)
+        return fieldErrors.isEmpty
+    }
+
+    /// Copy each sub-field's value (stored at top-level by the field
+    /// renderer) into the parent sysSelect's composite `values` dict so
+    /// the canonical data model matches the web's. Idempotent — safe to
+    /// call before every validate/submit.
+    private func mirrorSysSelectSubValues(in section: WidgetSection) {
+        for parent in section.fields where parent.kind == .sysSelect {
+            guard var composite = values[parent.id]?.dictValue,
+                  let selectedType = composite["selectedType"]?.stringValue,
+                  let options = parent.sysSelectOptions,
+                  let option = options.first(where: { $0.providerType == selectedType }) else { continue }
+            var subValues = composite["values"]?.dictValue ?? [:]
+            for sub in option.fields {
+                if let v = values[sub.id] {
+                    subValues[sub.name] = v
                 }
-            }()
-            if isEmpty { errors[field.id] = "This field is required." }
+            }
+            composite["values"] = .object(subValues)
+            values[parent.id] = .object(composite)
         }
-        fieldErrors = errors
-        return errors.isEmpty
     }
 
     // MARK: - Submit

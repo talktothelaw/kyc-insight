@@ -3,9 +3,11 @@ import SwiftUI
 import UIKit
 import AVFoundation
 
-/// Camera capture field — used for selfies, liveness, and document scans.
-/// The user gets a native full-screen capture sheet with a front/back
-/// camera toggle, capture button, and retake/confirm controls.
+/// Camera capture field — selfies, liveness, document scans.
+///
+/// After the user takes a photo, the image bytes are pushed through
+/// `FileUploadAPI` (same pipeline as `FileFieldView`) and the resulting
+/// `fileId` is stored on the session so `BuildSubmission` can emit it.
 @available(iOS 15.0, *)
 struct CameraFieldView: View {
     let field: WidgetField
@@ -14,41 +16,44 @@ struct CameraFieldView: View {
 
     @State private var showCamera = false
     @State private var captured: UIImage?
+    @State private var phase: Phase = .idle
+    @State private var localError: String?
+
+    enum Phase: Equatable { case idle, uploading, uploaded, failed }
+
+    private var fileKycType: String {
+        field.kycType ?? session.currentSection?.providerType ?? ""
+    }
 
     var body: some View {
         FieldShell(
             label: field.label,
             required: field.required,
-            helper: preferFrontCamera ? "Centre your face and hold still." : "Lay the document flat, fill the frame.",
-            error: session.fieldErrors[field.id]
+            helper: phase == .idle
+                ? (preferFrontCamera ? "Centre your face and hold still." : "Lay the document flat, fill the frame.")
+                : nil,
+            error: session.fieldErrors[field.id] ?? localError
         ) {
             VStack(spacing: 10) {
-                Button { showCamera = true } label: {
+                Button { if phase != .uploading { showCamera = true } } label: {
                     FieldBox {
                         HStack(spacing: 10) {
-                            Image(systemName: preferFrontCamera ? "person.crop.square" : "doc.viewfinder")
-                                .font(.system(size: 14, weight: .semibold))
-                                .foregroundColor(captured != nil ? KYCBrand.primary : .secondary)
-                                .frame(width: 28, height: 28)
-                                .background((captured != nil ? KYCBrand.primary : Color.secondary).opacity(0.12))
-                                .clipShape(RoundedRectangle(cornerRadius: 6))
+                            leadingIcon
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(captured == nil ? ("Open camera") : "Retake photo")
-                                    .font(.system(size: 14, weight: captured != nil ? .medium : .regular))
-                                    .foregroundColor(captured == nil ? .secondary : .primary)
-                                if captured == nil {
-                                    Text(preferFrontCamera ? "Selfie · front camera" : "Document · back camera")
-                                        .font(.system(size: 11)).foregroundColor(.secondary)
+                                Text(primaryLabel)
+                                    .font(.system(size: 14, weight: phase == .uploaded || captured != nil ? .medium : .regular))
+                                    .foregroundColor(phase == .idle && captured == nil ? .secondary : .primary)
+                                if let detail = secondaryLabel {
+                                    Text(detail).font(.system(size: 11)).foregroundColor(.secondary)
                                 }
                             }
                             Spacer()
-                            Image(systemName: captured != nil ? "checkmark.circle.fill" : "chevron.right")
-                                .foregroundColor(captured != nil ? .green : .secondary)
-                                .font(.system(size: 13, weight: .semibold))
+                            trailingIndicator
                         }
                     }
                 }
                 .buttonStyle(.plain)
+                .disabled(phase == .uploading)
                 if let captured {
                     Image(uiImage: captured)
                         .resizable()
@@ -63,16 +68,93 @@ struct CameraFieldView: View {
         .fullScreenCover(isPresented: $showCamera) {
             CameraCaptureSheet(preferFrontCamera: preferFrontCamera) { image in
                 captured = image
-                if let data = image.jpegData(compressionQuality: 0.85) {
-                    session.setValue(.object([
-                        "size": .number(Double(data.count)),
-                        "mime": .string("image/jpeg"),
-                    ]), for: field.id)
-                }
                 showCamera = false
+                if let data = image.jpegData(compressionQuality: 0.85) {
+                    Task { await runUpload(data: data) }
+                }
             } onCancel: {
                 showCamera = false
             }
+        }
+    }
+
+    private var leadingIcon: some View {
+        Group {
+            switch phase {
+            case .uploading: ProgressView()
+            case .uploaded:  Image(systemName: "checkmark.seal.fill").foregroundColor(.green)
+            case .failed:    Image(systemName: "exclamationmark.triangle.fill").foregroundColor(.red)
+            case .idle:
+                Image(systemName: preferFrontCamera ? "person.crop.square" : "doc.viewfinder")
+                    .foregroundColor(captured != nil ? KYCBrand.primary : .secondary)
+            }
+        }
+        .font(.system(size: 14, weight: .semibold))
+        .frame(width: 28, height: 28)
+        .background(iconBackground)
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+    }
+    private var iconBackground: Color {
+        switch phase {
+        case .uploading: return KYCBrand.primary.opacity(0.12)
+        case .uploaded:  return Color.green.opacity(0.12)
+        case .failed:    return Color.red.opacity(0.12)
+        case .idle:      return (captured != nil ? KYCBrand.primary : Color.secondary).opacity(0.12)
+        }
+    }
+    @ViewBuilder
+    private var trailingIndicator: some View {
+        switch phase {
+        case .uploaded:  Image(systemName: "checkmark.circle.fill").foregroundColor(.green).font(.system(size: 13, weight: .semibold))
+        case .failed:    Image(systemName: "arrow.clockwise").foregroundColor(.red).font(.system(size: 13, weight: .semibold))
+        default:         Image(systemName: "chevron.right").foregroundColor(.secondary).font(.system(size: 13, weight: .semibold))
+        }
+    }
+    private var primaryLabel: String {
+        switch phase {
+        case .uploading: return "Uploading photo…"
+        case .uploaded:  return "Retake photo"
+        case .failed:    return "Upload failed — tap to retake"
+        case .idle:      return captured == nil ? "Open camera" : "Retake photo"
+        }
+    }
+    private var secondaryLabel: String? {
+        switch phase {
+        case .uploading: return "Securing your photo…"
+        case .uploaded:  return nil
+        case .failed:    return localError ?? "Tap to try again"
+        case .idle:      return captured == nil
+            ? (preferFrontCamera ? "Selfie · front camera" : "Document · back camera")
+            : nil
+        }
+    }
+
+    private func runUpload(data: Data) async {
+        phase = .uploading
+        localError = nil
+        let name = "capture-\(UUID().uuidString.prefix(8)).jpg"
+        let api = FileUploadAPI(client: GraphQLClient(endpoint: session.config.gqlEndpoint, publicKey: session.config.publicKey))
+        do {
+            let result = try await api.upload(
+                data: data,
+                fileName: String(name),
+                mimeType: "image/jpeg",
+                processToken: session.schema?.processToken ?? "",
+                kycType: fileKycType,
+                fieldName: field.name
+            )
+            session.setValue(.object([
+                "fileId":   .string(result.fileId),
+                "uploaded": .bool(true),
+                "name":     .string(String(name)),
+                "mime":     .string("image/jpeg"),
+                "size":     .number(Double(data.count)),
+            ]), for: field.id)
+            phase = .uploaded
+        } catch {
+            phase = .failed
+            localError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            session.setValue(.string(""), for: field.id)
         }
     }
 }

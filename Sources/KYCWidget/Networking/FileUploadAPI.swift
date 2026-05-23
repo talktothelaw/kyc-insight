@@ -36,22 +36,38 @@ final class FileUploadAPI {
     }
 
     /// Run the full pipeline. Returns the fileId the caller stores as the
-    /// field value; submission emits it as `kycPayload.value` with `type:
-    /// 'file'`, and the backend swaps it for the S3 key at submit time.
-    func upload(data: Data, fileName: String, mimeType: String?, processToken: String, kycType: String) async throws -> UploadResult {
+    /// field value; submission emits it as `kycPayload.value` and the
+    /// backend swaps it for the S3 key at submit time.
+    ///
+    /// `fieldName` scopes the upload to a specific field on the level —
+    /// when a level has multiple file fields (e.g. `utility_bill` AND
+    /// `drivers_license`) they'd otherwise collide and the second upload
+    /// would overwrite the first server-side. Mirrors the web's
+    /// `uploadFile(client, { file, processToken, kycType, fieldName })`
+    /// signature (services/fileUploadApi.ts).
+    func upload(
+        data: Data,
+        fileName: String,
+        mimeType: String?,
+        processToken: String,
+        kycType: String,
+        fieldName: String? = nil
+    ) async throws -> UploadResult {
         guard let detected = Self.detect(mime: mimeType, name: fileName) else {
             throw GraphQLClientError.server(message: "Unsupported file type for \(fileName).", code: "UNSUPPORTED_TYPE")
         }
 
         // Step 1 — request an upload row.
         let request = """
-        mutation RequestFileUploadTwo($file: FileEnum!, $processToken: String!, $kycType: String!) {
-          RequestFileUploadTwo(file: $file, processToken: $processToken, kycType: $kycType)
+        mutation RequestFileUploadTwo($file: FileEnum!, $processToken: String!, $kycType: String!, $fieldName: String) {
+          RequestFileUploadTwo(file: $file, processToken: $processToken, kycType: $kycType, fieldName: $fieldName)
         }
         """
+        var vars: [String: Any] = ["file": detected.rawValue, "processToken": processToken, "kycType": kycType]
+        vars["fieldName"] = fieldName ?? NSNull()
         let fileId = try await client.execute(
             query: request,
-            variables: ["file": detected.rawValue, "processToken": processToken, "kycType": kycType],
+            variables: vars,
             rootField: "RequestFileUploadTwo",
             as: String.self
         )

@@ -232,23 +232,27 @@ struct BvnFieldView: View {
     private func start() async {
         phase = .requesting
         statusMessage = nil
+        print("[KYC BvnField] start → kycType=\(bvnKycType)")
         do {
             let flow = try await makeAPI().requestFlow(
                 processToken: session.schema?.processToken ?? "",
                 kycType: bvnKycType
             )
             guard let s = flow.redirectUrl, let url = URL(string: s) else {
+                print("[KYC BvnField] start FAILED — no redirectUrl. msg=\(flow.msg)")
                 statusMessage = flow.msg.isEmpty
                     ? "Could not start BVN verification. Please try again."
                     : flow.msg
                 phase = .error
                 return
             }
+            print("[KYC BvnField] start OK → redirectUrl=\(s) — opening sheet")
             redirectURL = url
             session.setValue(.string("initiated"), for: field.id)
             phase = .external
             showWebSheet = true
         } catch {
+            print("[KYC BvnField] start THREW: \(error)")
             statusMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
             phase = .error
         }
@@ -271,11 +275,13 @@ struct BvnFieldView: View {
     private func checkStatus() async {
         phase = .checking
         statusMessage = nil
+        print("[KYC BvnField] checkStatus (manual)")
         do {
             let status = try await makeAPI().getStatus(
                 processToken: session.schema?.processToken ?? "",
                 kycType: bvnKycType
             )
+            print("[KYC BvnField] checkStatus → state=\(status.state.rawValue) kycStatus=\(status.kycStatus ?? "-") msg=\(status.message ?? "-")")
             if status.state == .in_progress || status.state == .not_started {
                 phase = .external
                 statusMessage = "Not validated yet — finish the verification in the open window, then tap Check status again."
@@ -283,6 +289,7 @@ struct BvnFieldView: View {
             }
             apply(status)
         } catch {
+            print("[KYC BvnField] checkStatus THREW: \(error)")
             phase = .external
             statusMessage = "Could not reach the provider. Please try again."
         }
@@ -294,7 +301,11 @@ struct BvnFieldView: View {
     /// bridge already told us consent is done, and a manual cancel often
     /// means the user finished anyway.
     private func checkStatusOnDismiss() async {
-        guard phase == .external else { return }
+        print("[KYC BvnField] sheet onDismiss — phase=\(String(describing: phase))")
+        guard phase == .external else {
+            print("[KYC BvnField] sheet onDismiss — SKIP, not external phase")
+            return
+        }
         await checkStatus()
     }
 

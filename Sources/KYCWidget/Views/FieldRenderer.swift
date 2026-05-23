@@ -16,8 +16,9 @@ struct FieldRenderer: View {
         case .number:  TextFieldView(field: field, session: session, keyboard: .numberPad)
         case .url:     TextFieldView(field: field, session: session, keyboard: .URL)
         case .password: TextFieldView(field: field, session: session, keyboard: .default, secure: true)
-        case .date, .datetime: DateFieldView(field: field, session: session)
-        case .time:    TextFieldView(field: field, session: session, keyboard: .numbersAndPunctuation)
+        case .date:     DateFieldView(field: field, session: session, withTime: false)
+        case .datetime: DateFieldView(field: field, session: session, withTime: true)
+        case .time:     TimeFieldView(field: field, session: session)
 
         case .select:   SelectFieldView(field: field, session: session)
         case .radio:    RadioFieldView(field: field, session: session)
@@ -44,6 +45,12 @@ struct FieldRenderer: View {
     }
 }
 
+/// Fallback renderer for any FieldKind the iOS SDK doesn't natively
+/// render yet. Critical for a fully dynamic system — merchants can ship
+/// new custom providers at any time, and the SDK must surface that
+/// gracefully (visible, clear, non-blocking) rather than silently
+/// failing or showing a discrete icon the user may miss.
+/// Mirrors the web's `FallbackField` in `components/fields/fallback.tsx`.
 @available(iOS 15.0, *)
 struct PlaceholderFieldView: View {
     let field: WidgetField
@@ -53,16 +60,33 @@ struct PlaceholderFieldView: View {
         self.hint = hint
     }
     var body: some View {
-        FieldShell(label: field.label, required: field.required, helper: hint, error: nil) {
-            FieldBox {
-                HStack(spacing: 8) {
-                    Image(systemName: "wrench.adjustable")
-                        .foregroundColor(.secondary)
-                    Text("\(field.kind.rawValue) — native renderer pending")
-                        .font(.system(size: 13))
-                        .foregroundColor(.secondary)
+        FieldShell(label: field.label, required: field.required, helper: nil, error: nil) {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(alignment: .top, spacing: 10) {
+                    Image(systemName: "exclamationmark.circle.fill")
+                        .font(.system(size: 18))
+                        .foregroundColor(.orange)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Field type ‘\(field.kind.rawValue)’ is not supported in this app yet.")
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundColor(.primary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Text(hint.isEmpty
+                            ? "Please update the app to complete this step, or use the web verification flow."
+                            : hint)
+                            .font(.system(size: 12))
+                            .foregroundColor(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
             }
+            .padding(12)
+            .background(Color.orange.opacity(0.08))
+            .overlay(
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(Color.orange.opacity(0.35), lineWidth: 1)
+            )
+            .cornerRadius(8)
         }
     }
 }

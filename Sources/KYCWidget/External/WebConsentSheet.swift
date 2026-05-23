@@ -106,6 +106,75 @@ struct ConsentWebView: UIViewRepresentable {
         for name in Self.bvnBridgeNames {
             contentController.add(context.coordinator, name: name)
         }
+        // Forward the WebView's `console.log/.warn/.error` to Swift so the
+        // probe's diagnostics show up in Xcode's console. Without this the
+        // probe's "I never got a postMessage" hints stay trapped inside
+        // WebKit's hidden console.
+        contentController.add(context.coordinator, name: "kycConsole")
+        print("[KYC WebConsentSheet] registered bridge handlers: \(Self.bvnBridgeNames) + kycConsole — loading: \(url.absoluteString)")
+
+        // Inject a small probe script BEFORE the page loads. It runs at
+        // document_start, listens for the DOM CustomEvent fallback
+        // (`bvn:consent-received`) AND captures any postMessage the page
+        // sends to itself, then forwards them through our `bvnConsent`
+        // handler. This guards against pages whose JS only reaches for
+        // `window.parent`/`window.opener` (which don't exist for a
+        // WKWebView root document) — without the probe, those messages
+        // would never reach Swift even when the page dispatched them.
+        let probeJS = """
+        (function() {
+          // Forward all console output to native so it shows in Xcode.
+          ['log','warn','error','info','debug'].forEach(function(level) {
+            var orig = console[level].bind(console);
+            console[level] = function() {
+              try {
+                var parts = Array.prototype.slice.call(arguments).map(function(a) {
+                  try { return typeof a === 'string' ? a : JSON.stringify(a); }
+                  catch (e) { return String(a); }
+                });
+                window.webkit.messageHandlers.kycConsole.postMessage({ level: level, line: parts.join(' ') });
+              } catch (e) {}
+              orig.apply(console, arguments);
+            };
+          });
+          var bridgeNames = \(Self.bvnBridgeNamesJSON);
+          var send = function(payload, channel) {
+            for (var i = 0; i < bridgeNames.length; i++) {
+              var name = bridgeNames[i];
+              try {
+                if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers[name]) {
+                  window.webkit.messageHandlers[name].postMessage(payload);
+                  return;
+                }
+              } catch (e) {}
+            }
+            console.log('[KYC bridge probe] no message handler matched, payload:', payload, 'channel:', channel);
+          };
+          // DOM CustomEvent fallback per contract §2.5
+          document.addEventListener('bvn:consent-received', function(e) {
+            console.log('[KYC bridge probe] dom event received', e.detail);
+            send(e.detail, 'dom-custom-event');
+          });
+          // Catch messages the page tries to send via window.parent /
+          // window.opener / window.top — none of those exist for the
+          // WKWebView root document, so the page's own postMessage call
+          // would silently no-op. We re-route by listening on `message`
+          // (which DOES fire when the page calls `window.postMessage(...)`
+          // on its OWN window as a fallback) and forwarding through the
+          // native handler.
+          window.addEventListener('message', function(e) {
+            console.log('[KYC bridge probe] window message', { data: e.data, origin: e.origin });
+            if (e && e.data && e.data.source === 'i-gree-bvn-service') {
+              send(e.data, 'window-message');
+            }
+          });
+          console.log('[KYC bridge probe] installed, handlers available:',
+            Object.keys((window.webkit && window.webkit.messageHandlers) || {}));
+        })();
+        """
+        let userScript = WKUserScript(source: probeJS, injectionTime: .atDocumentStart, forMainFrameOnly: false)
+        contentController.addUserScript(userScript)
+
         let config = WKWebViewConfiguration()
         config.allowsInlineMediaPlayback = true
         config.mediaTypesRequiringUserActionForPlayback = []
@@ -123,6 +192,13 @@ struct ConsentWebView: UIViewRepresentable {
         webView.load(URLRequest(url: url))
         return webView
     }
+
+    /// JSON-encoded form of `bvnBridgeNames` used inside the probe JS.
+    fileprivate static let bvnBridgeNamesJSON: String = {
+        guard let d = try? JSONSerialization.data(withJSONObject: bvnBridgeNames),
+              let s = String(data: d, encoding: .utf8) else { return "[]" }
+        return s
+    }()
 
     func updateUIView(_ uiView: WKWebView, context: Context) {}
 
@@ -145,6 +221,17 @@ struct ConsentWebView: UIViewRepresentable {
         // MARK: - Bridge messages (i-gree BVN consent contract)
 
         func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
+            // Forward JS console output to Xcode separately from bridge
+            // payloads so they don't interfere with parsing.
+            if message.name == "kycConsole" {
+                if let dict = message.body as? [String: Any] {
+                    let level = (dict["level"] as? String) ?? "log"
+                    let line  = (dict["line"]  as? String) ?? String(describing: dict)
+                    print("[KYC WebView console.\(level)] \(line)")
+                }
+                return
+            }
+
             // Bridge payload is delivered as the raw object on iOS — but the
             // page also dispatches a DOM CustomEvent that some shells inject
             // as a stringified JSON. Handle both forms defensively.
@@ -164,7 +251,7 @@ struct ConsentWebView: UIViewRepresentable {
             }
             let source = payload["source"] as? String
             let type   = payload["type"]   as? String
-            print("[KYC WebConsentSheet] bridge \(message.name) source=\(source ?? "-") type=\(type ?? "-")")
+            print("[KYC WebConsentSheet] bridge \(message.name) source=\(source ?? "-") type=\(type ?? "-") raw=\(payload)")
             // Per contract §1: always validate `source` AND `type` —
             // never trust shape alone.
             guard source == "i-gree-bvn-service",
@@ -187,10 +274,12 @@ struct ConsentWebView: UIViewRepresentable {
 
         func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
             navStart = Date()
+            print("[KYC WebConsentSheet] nav START → \(webView.url?.absoluteString ?? "<nil>")")
             Task { @MainActor in parent.isLoading = true }
         }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            print("[KYC WebConsentSheet] nav FINISH → \(webView.url?.absoluteString ?? "<nil>")")
             // Wait until `didFinish` (not `didCommit`) so the spinner stays
             // until the page has actually rendered, not just received its
             // first byte. Also enforce a minimum 350ms total — fast loads

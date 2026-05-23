@@ -81,18 +81,41 @@ enum BuildSubmission {
                     consentReference = dict["consentReference"]?.stringValue
                 }
             case .cacBusinessLookup:
-                if let dict = raw?.dictValue,
-                   let id = dict["kycSubmissionId"]?.stringValue {
-                    items.append(.init(field: field.name, value: id, type: "ref"))
+                // CAC package is "self-completing": by the time the user
+                // taps Continue, executeCacBusinessChecks already wrote
+                // kyc_v2 server-side. The web emits nothing here and the
+                // submission flow detects the verified value to skip the
+                // round-trip. We mirror that.
+                break
+            case .liveness:
+                // Liveness emits TWO entries on the wire: the selfie
+                // (named after the field) and a synthetic
+                // `liveliness_images` entry that's a JSON-stringified
+                // array of frames. Mirrors buildSubmission.ts:87-96.
+                if let dict = raw?.dictValue {
+                    let selfie = dict["selfieImage"]?.stringValue ?? dict["fileId"]?.stringValue ?? ""
+                    items.append(.init(field: field.name, value: selfie))
+                    if let frames = dict["livelinessImages"]?.arrayValue {
+                        let arr = frames.compactMap { $0.stringValue }
+                        if let data = try? JSONSerialization.data(withJSONObject: arr),
+                           let json = String(data: data, encoding: .utf8) {
+                            items.append(.init(field: "liveliness_images", value: json))
+                        }
+                    }
+                } else {
+                    items.append(.init(field: field.name, value: ""))
                 }
-            case .file, .liveness, .image:
-                // The widget stored the uploaded file's id under `fileId`.
-                // Real upload pipeline writes that key after RequestFileUploadTwo.
-                if let dict = raw?.dictValue,
-                   let fileId = dict["fileId"]?.stringValue {
-                    items.append(.init(field: field.name, value: fileId, type: "file"))
-                }
+            case .file, .image:
+                // FileFieldValue stores `fileId` after upload. Pre-upload
+                // the field is empty — emit '' so validation flags it as
+                // missing. NOTE: NO `type` key — the backend's kycPayload
+                // schema has no such field; sending it produced spurious
+                // strict-mode warnings server-side.
+                let fileId = raw?.dictValue?["fileId"]?.stringValue ?? ""
+                items.append(.init(field: field.name, value: fileId))
             case .location:
+                // LocationFieldView stores `{ _id, name }`; the wire shape
+                // is just the _id string.
                 if let dict = raw?.dictValue,
                    let id = dict["_id"]?.stringValue {
                     items.append(.init(field: field.name, value: id))
@@ -102,13 +125,21 @@ enum BuildSubmission {
             }
         }
 
+        // Drop kycPayload entries whose value is empty — kyc_v2.kycPayload
+        // schema has `value: { type: String, required: true }`, and
+        // Mongoose treats empty strings as missing-required. Required
+        // fields are already caught by `validateCurrentSection`; remaining
+        // empties are optional-and-unfilled and safe to drop. Mirrors the
+        // web's `filteredKycPayload` filter (buildSubmission.ts:120).
+        let filtered = items.filter { !$0.value.isEmpty }
+
         return BuiltPayload(
             processToken: processToken,
             providerId: section.providerId,
             kycType: section.providerType,
             levelSlug: step.slug,
             optionalType: optionalType,
-            kycPayload: items,
+            kycPayload: filtered,
             consentAcceptanceId: consentAcceptanceId,
             consentReference: consentReference
         )
