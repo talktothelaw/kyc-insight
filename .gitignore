@@ -1,0 +1,45 @@
+# macOS
+.DS_Store
+
+# Swift Package Manager
+/.build
+/Packages
+Package.resolved
+.swiftpm/configuration/registries.json
+.swiftpm/xcode/package.xcworkspace/contents.xcworkspacedata
+.swiftpm/xcode/xcuserdata/
+
+# Xcode
+xcuserdata/
+*.xcuserstate
+*.xcuserdatad/
+DerivedData/
+build/
+*.moved-aside
+*.hmap
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+# Xcode workspace local data
+**/xcshareddata/IDEWorkspaceChecks.plist
+**/xcshareddata/WorkspaceSettings.xcsettings
+.build
+# CocoaPods (if ever used)
+Pods/
+*.xcworkspace/xcuserdata/
+
+# fastlane
+fastlane/report.xml
+fastlane/Preview.html
+fastlane/screenshots/**/*.png
+fastlane/test_output
+
+# Editors / OS
+*.swp
+*.swo
+.idea/
+.vscode/
+
+# Credentials
+.netrc
