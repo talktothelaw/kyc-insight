@@ -20,6 +20,16 @@
     <string>1</string>
     <key>LSRequiresIPhoneOS</key>
     <true/>
+    <!-- Example-app only: allow plain HTTP so the developer can point the
+         GraphQL endpoint at `http://localhost:3000/graphql` (or a LAN IP)
+         while iterating against a local kyc-backend, mirroring what the
+         web playground at localhost:4657 does. Production integrators
+         using the SDK ship with HTTPS endpoints and do NOT need this. -->
+    <key>NSAppTransportSecurity</key>
+    <dict>
+        <key>NSAllowsArbitraryLoads</key>
+        <true/>
+    </dict>
     <!-- Required by the KYC widget for document scan, liveness, file upload. -->
     <key>NSCameraUsageDescription</key>
     <string>Used to capture documents and complete liveness checks during identity verification.</string>

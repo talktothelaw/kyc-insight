@@ -15,9 +15,14 @@ public struct BvnStatus: Decodable, Sendable {
 
 public struct BvnFlow: Sendable {
     public let msg: String
-    public let auth: String
-    public let flag: String
+    /// Provider auth/flag flags — backend GraphQL schema declares these as
+    /// `Boolean` (see `kyc-backend/src/services/kyc/typeDefs.ts:
+    /// RBVNVerificationFlowType`). Web treats them as `string` only because
+    /// JavaScript doesn't type-check; Swift can't be that loose.
+    public let auth: Bool
+    public let flag: Bool
     public let redirectUrl: String?
+    public let rawData: AnyCodable?
 }
 
 @MainActor
@@ -43,7 +48,18 @@ final class BvnAPI {
     }
 
     func requestFlow(processToken: String, kycType: String) async throws -> BvnFlow {
-        struct RawFlow: Decodable { let msg: String; let auth: String; let flag: String; let data: AnyCodable? }
+        // Types match the GraphQL schema at
+        // `kyc-backend/src/services/kyc/typeDefs.ts:RBVNVerificationFlowType`
+        // — msg:String, auth:Boolean, flag:Boolean, data:JSON. All are
+        // optional because the backend resolver returns `undefined` (→ GQL
+        // null at every field) when the upstream BVN provider errors out
+        // and `bvnService.ts:95` swallows the exception.
+        struct RawFlow: Decodable {
+            let msg: String?
+            let auth: Bool?
+            let flag: Bool?
+            let data: AnyCodable?
+        }
         let mutation = """
         mutation RequestBVNVerificationFlow($processToken: String, $kycType: String) {
           RequestBVNVerificationFlow(processToken: $processToken, kycType: $kycType) {
@@ -51,6 +67,7 @@ final class BvnAPI {
           }
         }
         """
+        print("[KYC BvnAPI] requestFlow processToken=\(processToken.prefix(8))… kycType=\(kycType)")
         let raw = try await client.execute(
             query: mutation,
             variables: ["processToken": processToken, "kycType": kycType],
@@ -64,6 +81,13 @@ final class BvnAPI {
            let url = first["url"]?.stringValue {
             redirectUrl = url
         }
-        return BvnFlow(msg: raw.msg, auth: raw.auth, flag: raw.flag, redirectUrl: redirectUrl)
+        print("[KYC BvnAPI] requestFlow done msg=\(raw.msg ?? "-") auth=\(raw.auth.map(String.init) ?? "-") flag=\(raw.flag.map(String.init) ?? "-") redirectUrl=\(redirectUrl ?? "<nil>")")
+        return BvnFlow(
+            msg: raw.msg ?? "",
+            auth: raw.auth ?? false,
+            flag: raw.flag ?? false,
+            redirectUrl: redirectUrl,
+            rawData: raw.data
+        )
     }
 }

@@ -23,19 +23,38 @@ struct WebConsentSheet: View {
     let onResult: (Result<String, KYCWidgetError>) -> Void
 
     @Environment(\.presentationMode) private var presentationMode
+    /// Driven by `ConsentWebView`'s navigation delegate. While the page is
+    /// still loading we cover the blank WKWebView with a native spinner +
+    /// "Loading verification…" label — the WebView itself paints a white
+    /// rectangle until first content render, which looks broken.
+    @State private var isLoading = true
 
     var body: some View {
         NavigationView {
-            ConsentWebView(
-                url: initialURL,
-                successPrefixes: successURLPrefixes,
-                cancelPrefixes: cancelURLPrefixes,
-                onResult: { result in
-                    presentationMode.wrappedValue.dismiss()
-                    onResult(result)
+            ZStack {
+                // Solid base layer — even if the overlay races the WebView's
+                // first paint, the background never flashes white.
+                Color(.systemBackground).ignoresSafeArea()
+                ConsentWebView(
+                    url: initialURL,
+                    successPrefixes: successURLPrefixes,
+                    cancelPrefixes: cancelURLPrefixes,
+                    isLoading: $isLoading,
+                    onResult: { result in
+                        presentationMode.wrappedValue.dismiss()
+                        onResult(result)
+                    }
+                )
+                if isLoading {
+                    LoadingOverlay()
+                        .transition(.opacity)
+                        .zIndex(1)
                 }
-            )
-            .navigationBarTitle("External consent", displayMode: .inline)
+            }
+            // Only animate AFTER the first commit — the initial overlay
+            // appearance must be instant, not faded in from invisible.
+            .animation(.easeInOut(duration: 0.18), value: isLoading)
+            .navigationBarTitle("Verification", displayMode: .inline)
             .navigationBarItems(
                 trailing: Button("Cancel") {
                     presentationMode.wrappedValue.dismiss()
@@ -46,20 +65,61 @@ struct WebConsentSheet: View {
     }
 }
 
+/// Native loading state for the consent sheet. UIKit `UIActivityIndicator`
+/// via SwiftUI's `ProgressView` so the spinner matches the rest of iOS.
+@available(iOS 15.0, *)
+private struct LoadingOverlay: View {
+    var body: some View {
+        ZStack {
+            // Solid background so the blank WKWebView doesn't bleed
+            // through during the first 200ms before the page paints.
+            Color(.systemBackground).ignoresSafeArea()
+            VStack(spacing: 14) {
+                ProgressView()
+                    .progressViewStyle(.circular)
+                    .controlSize(.large)
+                Text("Loading verification…")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(.secondary)
+            }
+        }
+    }
+}
+
 @available(iOS 15.0, *)
 struct ConsentWebView: UIViewRepresentable {
     let url: URL
     let successPrefixes: [String]
     let cancelPrefixes: [String]
+    @Binding var isLoading: Bool
     let onResult: (Result<String, KYCWidgetError>) -> Void
 
+    /// JS message-handler names the i-gree BVN consent page tries when
+    /// firing `BVN_CONSENT_RECEIVED` / `BVN_CONSENT_CLOSE_REQUESTED`. We
+    /// register ALL of them so whichever one the page tries first lands.
+    /// Names are case-sensitive and must match the page's allowlist
+    /// (see contract §2.2).
+    fileprivate static let bvnBridgeNames = ["bvnConsent", "BVNConsent", "kycBridge", "KycBridge"]
+
     func makeUIView(context: Context) -> WKWebView {
+        let contentController = WKUserContentController()
+        for name in Self.bvnBridgeNames {
+            contentController.add(context.coordinator, name: name)
+        }
         let config = WKWebViewConfiguration()
         config.allowsInlineMediaPlayback = true
         config.mediaTypesRequiringUserActionForPlayback = []
+        config.userContentController = contentController
+
         let webView = WKWebView(frame: .zero, configuration: config)
         webView.navigationDelegate = context.coordinator
         webView.uiDelegate = context.coordinator
+        // Paint the WebView background as systemBackground so the slim
+        // moment between overlay-fade and full content render doesn't
+        // flash a pure-white block (looks jarring in dark mode).
+        webView.isOpaque = false
+        webView.backgroundColor = .systemBackground
+        webView.scrollView.backgroundColor = .systemBackground
         webView.load(URLRequest(url: url))
         return webView
     }
@@ -68,9 +128,89 @@ struct ConsentWebView: UIViewRepresentable {
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
-    final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
+    final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
         let parent: ConsentWebView
+        /// Prevents the bridge from firing the success callback twice if
+        /// the page posts both `BVN_CONSENT_RECEIVED` and the follow-up
+        /// `BVN_CONSENT_CLOSE_REQUESTED`. Same idea as the web client's
+        /// `flowRef` cancellation.
+        private var consentDelivered = false
+        /// Wall-clock time the most recent navigation started, used to
+        /// enforce a minimum overlay display of 350ms. Without this, fast
+        /// page loads (cached resources, simulator) flicker the spinner
+        /// for ~50ms — visible as a flash, looks broken.
+        private var navStart: Date?
         init(_ parent: ConsentWebView) { self.parent = parent }
+
+        // MARK: - Bridge messages (i-gree BVN consent contract)
+
+        func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
+            // Bridge payload is delivered as the raw object on iOS — but the
+            // page also dispatches a DOM CustomEvent that some shells inject
+            // as a stringified JSON. Handle both forms defensively.
+            let body: [String: Any]?
+            if let dict = message.body as? [String: Any] {
+                body = dict
+            } else if let str = message.body as? String,
+                      let data = str.data(using: .utf8),
+                      let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                body = parsed
+            } else {
+                body = nil
+            }
+            guard let payload = body else {
+                print("[KYC WebConsentSheet] bridge message \(message.name) had unknown body type: \(type(of: message.body))")
+                return
+            }
+            let source = payload["source"] as? String
+            let type   = payload["type"]   as? String
+            print("[KYC WebConsentSheet] bridge \(message.name) source=\(source ?? "-") type=\(type ?? "-")")
+            // Per contract §1: always validate `source` AND `type` —
+            // never trust shape alone.
+            guard source == "i-gree-bvn-service",
+                  type == "BVN_CONSENT_RECEIVED" || type == "BVN_CONSENT_CLOSE_REQUESTED" else {
+                return
+            }
+            guard !consentDelivered else { return }
+            consentDelivered = true
+            // No reference token in this contract — BVN data ships
+            // server-to-server via the RHResponseURL webhook. Surface
+            // the success signal with an empty ref; BvnFieldView's
+            // background polling picks up the completed status on the
+            // next getBvnStatus tick (or sooner via onDismiss).
+            Task { @MainActor in
+                parent.onResult(.success(""))
+            }
+        }
+
+        // MARK: - Loading state
+
+        func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+            navStart = Date()
+            Task { @MainActor in parent.isLoading = true }
+        }
+
+        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            // Wait until `didFinish` (not `didCommit`) so the spinner stays
+            // until the page has actually rendered, not just received its
+            // first byte. Also enforce a minimum 350ms total — fast loads
+            // would otherwise blink the overlay on and off in <100ms.
+            dismissOverlayAfterMinimum()
+        }
+
+        private func dismissOverlayAfterMinimum() {
+            let minimum: TimeInterval = 0.35
+            let elapsed = navStart.map { Date().timeIntervalSince($0) } ?? minimum
+            let remaining = max(0, minimum - elapsed)
+            Task { @MainActor in
+                if remaining > 0 {
+                    try? await Task.sleep(nanoseconds: UInt64(remaining * 1_000_000_000))
+                }
+                parent.isLoading = false
+            }
+        }
+
+        // MARK: - Redirect interception
 
         func webView(_ webView: WKWebView,
                      decidePolicyFor navigationAction: WKNavigationAction,
@@ -100,6 +240,12 @@ struct ConsentWebView: UIViewRepresentable {
         }
 
         func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+            Task { @MainActor in parent.isLoading = false }
+            parent.onResult(.failure(.externalConsentFailed(message: error.localizedDescription)))
+        }
+
+        func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+            Task { @MainActor in parent.isLoading = false }
             parent.onResult(.failure(.externalConsentFailed(message: error.localizedDescription)))
         }
 

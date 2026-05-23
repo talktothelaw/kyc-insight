@@ -4,15 +4,17 @@ import SwiftUI
 /// Native BVN field. 1:1 port of
 /// `kyc-web-wiget-v2/src/components/fields/BvnField.tsx`.
 ///
-/// The user never types their BVN inline — they hit "Start BVN
-/// Verification", we call `RequestBVNVerificationFlow`, open the returned
-/// NIBSS URL in `WebConsentSheet`, and poll `getBvnStatus` every 10s for
-/// up to 30 minutes (matching the web's `POLL_INTERVAL_MS` /
-/// `POLL_TIMEOUT_MS`).
-///
-/// Phases mirror the web's exactly:
-///   idle → requesting → external → polling → (completed | failed |
-///   pollingExhausted) — and a discrete `error` phase for init failures.
+/// Flow:
+///   1. User taps **"Start BVN Verification"** → call
+///      `RequestBVNVerificationFlow` → open the returned NIBSS URL inside
+///      `WebConsentSheet`.
+///   2. The i-gree consent-received page broadcasts
+///      `BVN_CONSENT_RECEIVED` over the `bvnConsent` script-message
+///      handler (registered in `WebConsentSheet`); we react instantly,
+///      dismiss the sheet, and call `getBvnStatus` once to confirm.
+///   3. If the bridge never fires (user closed the window manually, or
+///      they're mid-flow), they hit **"Check status"** to query
+///      `getBvnStatus` themselves. No background polling.
 @available(iOS 15.0, *)
 struct BvnFieldView: View {
     let field: WidgetField
@@ -22,14 +24,9 @@ struct BvnFieldView: View {
     @State private var statusMessage: String?
     @State private var redirectURL: URL?
     @State private var showWebSheet = false
-    @State private var pollTask: Task<Void, Never>?
-    @State private var startedAt: Date?
-
-    private let pollInterval: TimeInterval = 10
-    private let pollTimeout: TimeInterval = 30 * 60
 
     enum Phase: Equatable {
-        case idle, requesting, external, polling, pollingExhausted, completed, failed, error
+        case idle, requesting, external, checking, completed, failed, error
     }
 
     var body: some View {
@@ -48,12 +45,15 @@ struct BvnFieldView: View {
                 }
             }
         }
-        .sheet(isPresented: $showWebSheet) {
+        .sheet(isPresented: $showWebSheet,
+               onDismiss: { Task { await checkStatusOnDismiss() } }) {
             if let url = redirectURL {
-                // NIBSS hosts the BVN entry page; it has no fixed
-                // completion redirect we can intercept, so the user
-                // dismisses the sheet manually. The background poll is
-                // what actually detects completion.
+                // NIBSS hosts the BVN entry page. The consent-received page
+                // broadcasts `BVN_CONSENT_RECEIVED` via the i-gree contract;
+                // `WebConsentSheet` listens on the `bvnConsent` /
+                // `BVNConsent` / `kycBridge` / `KycBridge` script handlers
+                // and auto-resolves success the moment it arrives. The
+                // user can also dismiss manually and tap "Check status".
                 WebConsentSheet(
                     initialURL: url,
                     successURLPrefixes: [],
@@ -63,28 +63,27 @@ struct BvnFieldView: View {
                 }
             }
         }
-        .onDisappear { pollTask?.cancel() }
     }
 
     @ViewBuilder
     private var phaseView: some View {
         switch phase {
-        case .idle:               idlePanel
-        case .requesting:         startingPanel
-        case .external, .polling: inProgressPanel
-        case .pollingExhausted:   exhaustedPanel
-        case .completed:          completedPanel
-        case .failed, .error:     errorPanel
+        case .idle:       idlePanel
+        case .requesting: startingPanel
+        case .external:   inProgressPanel
+        case .checking:   checkingPanel
+        case .completed:  completedPanel
+        case .failed, .error: errorPanel
         }
     }
 
     private var helperText: String? {
         phase == .idle
-            ? "Verify your BVN to continue. The verification opens in a window — return here once it's done."
+            ? "Verify your BVN to continue. The verification opens in a separate window."
             : nil
     }
 
-    // MARK: - Panels (mirror web layout)
+    // MARK: - Panels
 
     private var idlePanel: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -135,42 +134,53 @@ struct BvnFieldView: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("BVN verification in progress")
                         .font(.system(size: 14, weight: .semibold))
-                    Text("Complete the verification in the window we just opened. We'll detect it automatically — usually within a minute or two.")
+                    Text("Complete the verification in the window we just opened. We'll detect it automatically once it's done — or tap Check status below.")
                         .font(.system(size: 12)).foregroundColor(.secondary)
                 }
             }
-            Button { reopen() } label: {
-                HStack {
-                    Image(systemName: "arrow.up.forward.square")
-                    Text("Reopen verification")
-                        .font(.system(size: 13, weight: .medium))
+            HStack(spacing: 10) {
+                Button { reopen() } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "arrow.up.forward.square")
+                        Text("Reopen verification")
+                    }
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(KYCBrand.primary)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 10)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8)
+                            .stroke(KYCBrand.primary.opacity(0.4), lineWidth: 1)
+                    )
                 }
-                .foregroundColor(KYCBrand.primary)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 10)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 8)
-                        .stroke(KYCBrand.primary.opacity(0.4), lineWidth: 1)
-                )
+                .disabled(redirectURL == nil)
+                Button { Task { await checkStatus() } } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "arrow.clockwise")
+                        Text("Check status")
+                    }
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundColor(.white)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 10)
+                    .background(KYCBrand.primary)
+                    .cornerRadius(8)
+                }
             }
-            .disabled(redirectURL == nil)
+            Button("Restart verification") { restart() }
+                .font(.system(size: 12))
+                .foregroundColor(.secondary)
         }
     }
 
-    private var exhaustedPanel: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Still waiting on the provider")
-                .font(.system(size: 14, weight: .semibold))
-            Text("We didn't get a result after 30 minutes of automatic checks. Try Recheck or Restart.")
-                .font(.system(size: 12)).foregroundColor(.secondary)
-            HStack(spacing: 8) {
-                Button("Reopen") { reopen() }
-                    .buttonStyle(.bordered).controlSize(.small)
-                    .disabled(redirectURL == nil)
-                Button("Recheck") { Task { await recheck() } }
-                    .buttonStyle(.bordered).controlSize(.small)
-                Button("Restart") { restart() }
-                    .buttonStyle(.borderedProminent).controlSize(.small)
+    private var checkingPanel: some View {
+        HStack(spacing: 10) {
+            ProgressView()
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Checking status…")
+                    .font(.system(size: 14, weight: .semibold))
+                Text("Asking the provider whether your verification has completed.")
+                    .font(.system(size: 12)).foregroundColor(.secondary)
             }
         }
     }
@@ -207,22 +217,23 @@ struct BvnFieldView: View {
 
     // MARK: - Actions
 
-    /// `kycType` to send. The web's BvnField reads `ctx.kycType`, which the
-    /// SchemaRenderer wires to `section.meta.providerType` — the PARENT
-    /// section's providerType, even when BVN is nested inside a sys_select.
-    /// Backend uses this only to flag the bvnSession as `direct_bvn` (when
-    /// kycType==="bvn") or `sub_bvn` (anything else); see
-    /// `kyc-backend/src/services/kyc/bvnService.ts:11`.
+    /// `kycType` to send. The web reads `ctx.kycType` which the SchemaRenderer
+    /// wires to `section.meta.providerType` — the PARENT section's
+    /// providerType, even when BVN is nested inside a sys_select. Backend
+    /// uses this only to flag the bvnSession as `direct_bvn` /` sub_bvn`.
     private var bvnKycType: String {
         session.currentSection?.providerType ?? "bvn"
+    }
+
+    private func makeAPI() -> BvnAPI {
+        BvnAPI(client: GraphQLClient(endpoint: session.config.gqlEndpoint, publicKey: session.config.publicKey))
     }
 
     private func start() async {
         phase = .requesting
         statusMessage = nil
-        let api = BvnAPI(client: GraphQLClient(endpoint: session.config.gqlEndpoint, publicKey: session.config.publicKey))
         do {
-            let flow = try await api.requestFlow(
+            let flow = try await makeAPI().requestFlow(
                 processToken: session.schema?.processToken ?? "",
                 kycType: bvnKycType
             )
@@ -235,10 +246,8 @@ struct BvnFieldView: View {
             }
             redirectURL = url
             session.setValue(.string("initiated"), for: field.id)
-            startedAt = Date()
             phase = .external
             showWebSheet = true
-            startPolling()
         } catch {
             statusMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
             phase = .error
@@ -250,76 +259,62 @@ struct BvnFieldView: View {
     }
 
     private func restart() {
-        pollTask?.cancel()
-        pollTask = nil
         redirectURL = nil
         statusMessage = nil
-        startedAt = nil
         session.setValue(.string(""), for: field.id)
         phase = .idle
     }
 
-    private func startPolling() {
-        pollTask?.cancel()
-        phase = .polling
-        let api = BvnAPI(client: GraphQLClient(endpoint: session.config.gqlEndpoint, publicKey: session.config.publicKey))
-        let token = session.schema?.processToken ?? ""
-        let kycType = bvnKycType
-        pollTask = Task { @MainActor in
-            while !Task.isCancelled {
-                if let s = startedAt, Date().timeIntervalSince(s) > pollTimeout {
-                    phase = .pollingExhausted
-                    return
-                }
-                try? await Task.sleep(nanoseconds: UInt64(pollInterval * 1_000_000_000))
-                if Task.isCancelled { return }
-                do {
-                    let status = try await api.getStatus(processToken: token, kycType: kycType)
-                    if Task.isCancelled { return }
-                    if apply(status) { return }
-                } catch {
-                    // transient — keep polling
-                }
+    /// Hit by the "Check status" button. Always queries `getBvnStatus`.
+    /// On in_progress/not_started, leaves the user in the same in-progress
+    /// panel with a friendly hint so they can try again.
+    private func checkStatus() async {
+        phase = .checking
+        statusMessage = nil
+        do {
+            let status = try await makeAPI().getStatus(
+                processToken: session.schema?.processToken ?? "",
+                kycType: bvnKycType
+            )
+            if status.state == .in_progress || status.state == .not_started {
+                phase = .external
+                statusMessage = "Not validated yet — finish the verification in the open window, then tap Check status again."
+                return
             }
+            apply(status)
+        } catch {
+            phase = .external
+            statusMessage = "Could not reach the provider. Please try again."
         }
     }
 
-    @discardableResult
-    private func apply(_ status: BvnStatus) -> Bool {
+    /// Fired automatically when the sheet dismisses — either via the
+    /// i-gree bridge (`BVN_CONSENT_RECEIVED`) or by the user tapping
+    /// Cancel. Treats every dismiss as a free "Check status" because the
+    /// bridge already told us consent is done, and a manual cancel often
+    /// means the user finished anyway.
+    private func checkStatusOnDismiss() async {
+        guard phase == .external else { return }
+        await checkStatus()
+    }
+
+    private func apply(_ status: BvnStatus) {
         switch status.state {
         case .completed:
             phase = .completed
             statusMessage = nil
             session.setValue(.string("completed"), for: field.id)
-            return true
         case .failed:
             phase = .failed
             statusMessage = status.message ?? "BVN verification failed."
             session.setValue(.string(""), for: field.id)
-            return true
         case .expired:
-            phase = .pollingExhausted
-            return true
+            phase = .failed
+            statusMessage = status.message ?? "Your BVN verification session expired. Please restart."
+            session.setValue(.string(""), for: field.id)
         case .in_progress, .not_started:
+            phase = .external
             statusMessage = status.message
-            return false
-        }
-    }
-
-    private func recheck() async {
-        let api = BvnAPI(client: GraphQLClient(endpoint: session.config.gqlEndpoint, publicKey: session.config.publicKey))
-        do {
-            let status = try await api.getStatus(
-                processToken: session.schema?.processToken ?? "",
-                kycType: bvnKycType
-            )
-            if status.state == .in_progress || status.state == .not_started {
-                statusMessage = "Not validated yet — please complete the verification in the open window."
-                return
-            }
-            apply(status)
-        } catch {
-            statusMessage = "Could not reach the provider. Please try again."
         }
     }
 }

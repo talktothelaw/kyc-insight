@@ -21,6 +21,12 @@ struct RootView: View {
     @State private var name       = "Sample Customer"
     @State private var levelSlug  = "tier_1"
     @State private var vName      = "Lawrence"
+    /// Custom GraphQL gateway. Mirrors the web playground's
+    /// `gqlEndpoint` field — defaults to production but the developer can
+    /// flip to localhost for local kyc-backend iteration. Simulator can
+    /// reach the host machine via `http://localhost:PORT`; a physical
+    /// device needs the host's LAN IP (e.g. `http://192.168.1.42:3000`).
+    @State private var gqlEndpoint = "https://kyc-api.netapps.ng/graphql"
 
     @State private var log: [String] = []
     @State private var widget: KYCWidget?
@@ -36,6 +42,15 @@ struct RootView: View {
                         field("Name",        text: $name)
                         field("Level slug",  text: $levelSlug,  mono: true)
                         field("vName (optional)", text: $vName)
+                    }
+
+                    section("Gateway") {
+                        field("GraphQL endpoint", text: $gqlEndpoint, mono: true)
+                        HStack(spacing: 8) {
+                            preset("Production", "https://kyc-api.netapps.ng/graphql")
+                            preset("Localhost",  "http://localhost:3000/graphql")
+                            preset("Sim host",   "http://127.0.0.1:3000/graphql")
+                        }
                     }
 
                     Button(action: startVerification) {
@@ -71,6 +86,20 @@ struct RootView: View {
         .padding(12)
         .background(Color(.secondarySystemBackground))
         .clipShape(RoundedRectangle(cornerRadius: 10))
+    }
+
+    @ViewBuilder
+    private func preset(_ label: String, _ value: String) -> some View {
+        Button(label) { gqlEndpoint = value }
+            .font(.system(size: 11, weight: .medium))
+            .padding(.vertical, 6).padding(.horizontal, 10)
+            .background(
+                (gqlEndpoint == value
+                    ? Color(red: 0.12, green: 0.23, blue: 0.54)
+                    : Color(.tertiarySystemBackground))
+            )
+            .foregroundColor(gqlEndpoint == value ? .white : .primary)
+            .cornerRadius(6)
     }
 
     @ViewBuilder
@@ -130,6 +159,9 @@ struct RootView: View {
     // MARK: - Launch
 
     private func startVerification() {
+        let trimmedEndpoint = gqlEndpoint.trimmingCharacters(in: .whitespacesAndNewlines)
+        let endpoint = URL(string: trimmedEndpoint) ?? KYCWidgetConfig.defaultGQLEndpoint
+        appendLog("ENDPOINT \(endpoint.absoluteString)")
         let config = KYCWidgetConfig(
             publicKey: publicKey.trimmingCharacters(in: .whitespacesAndNewlines),
             userRef:   userRef.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -138,6 +170,7 @@ struct RootView: View {
             levelSlug: levelSlug.trimmingCharacters(in: .whitespacesAndNewlines),
             vName: vName.isEmpty ? nil : vName,
             display: .modal,
+            gqlEndpoint: endpoint,
             demoMode: false  // ← always hit the real backend on tap; no cached / mocked schema
         )
 
