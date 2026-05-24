@@ -66,10 +66,18 @@ enum SectionValidator {
             if selectedType.isEmpty {
                 return field.required ? "\(field.label) is required." : nil
             }
-            // Recurse into the chosen sub-option's required sub-fields —
-            // an unfilled required sub-field invalidates the whole select.
-            // BVN-style sub-fields write under a `values` dict keyed by
-            // field NAME (not id), mirroring the web.
+            // Recurse into the chosen sub-option's required sub-fields.
+            // Dispatch to each sub-field's own per-kind validator
+            // FIRST — that surfaces the actionable message
+            // ("Please complete NIN verification.", "Verify your
+            // BVN to continue.", etc.) instead of the generic
+            // "Please complete all fields…" wall. The per-kind
+            // validator already handles "value missing" for its own
+            // shape (ninConsent checks for consentAcceptanceId, bvn
+            // checks for the completion marker, etc.), so we don't
+            // need a separate isEmpty preamble. The generic message
+            // is kept only as a final fall-through for unknown sub-
+            // kinds that don't carry kind-specific shape rules.
             guard let options = field.sysSelectOptions,
                   let option = options.first(where: { $0.providerType == selectedType }) else {
                 return nil
@@ -77,16 +85,16 @@ enum SectionValidator {
             let subValues = composite?["values"]?.dictValue ?? [:]
             for sub in option.fields where sub.required {
                 let raw = subValues[sub.name]
-                if isEmpty(raw) {
-                    return "Please complete all fields for \(option.label)."
-                }
-                // For sub-fields that themselves carry kind-specific
-                // semantics (a nested ninConsent inside a sysSelect, for
-                // example), recurse. The web validates sub-fields with the
-                // SAME validator, so any custom-provider type bolted onto
-                // a sub-option still gets its kind check.
                 if let err = validate(field: sub, value: raw) {
                     return err
+                }
+                // Defensive fall-through: per-kind validator passed
+                // but the value is genuinely empty (sub-kind we don't
+                // have a specific check for). Surface a sub-field-
+                // aware message rather than the generic "complete all
+                // fields" wall.
+                if isEmpty(raw) {
+                    return "\(sub.label) is required to continue."
                 }
             }
             return nil

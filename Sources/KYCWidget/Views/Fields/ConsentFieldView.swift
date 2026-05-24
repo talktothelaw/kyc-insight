@@ -414,6 +414,7 @@ struct ConsentFieldView: View {
     private func handleExternalResult(_ result: Result<String, KYCWidgetError>) async {
         switch result {
         case .success(let ref):
+            print("[KYC ConsentField] handleExternalResult success — reference=\(ref.prefix(16))…")
             consentReference = ref
             guard let cid = consentAcceptanceId else {
                 phase = .error
@@ -429,6 +430,7 @@ struct ConsentFieldView: View {
             ]), for: field.id)
             await poll()
         case .failure(let err):
+            print("[KYC ConsentField] handleExternalResult FAILURE: \(err)")
             errorMsg = err.localizedDescription
             phase = .error
         }
@@ -439,6 +441,7 @@ struct ConsentFieldView: View {
     private func poll() async {
         phase = .polling
         pollAttempt = 0
+        print("[KYC ConsentField] poll start — maxAttempts=\(pollMax) intervalSec=\(pollInterval) hasReference=\(consentReference != nil)")
         while pollAttempt < pollMax {
             pollAttempt += 1
             do {
@@ -447,29 +450,52 @@ struct ConsentFieldView: View {
                     providerId: session.currentSection?.providerId,
                     levelSlug: session.currentStep?.slug
                 )
+                print("[KYC ConsentField] poll attempt \(pollAttempt)/\(pollMax) → requirementState=\(s.requirementState) consentStatus=\(s.consentStatus ?? "-")")
                 switch s.requirementState.lowercased() {
-                case "auto_completed":
+                case "auto_completed", "approved":
                     phase = .autoCompleted
                     updateValueWith(autoCompleted: true, awaiting: false)
                     return
-                case "awaiting_final_submission", "ready_for_finalization":
+                case "awaiting_final_submission", "ready_for_finalization", "awaiting_user_submission", "pending_review":
                     phase = .awaitingFinalSubmission
                     updateValueWith(autoCompleted: false, awaiting: true)
                     return
                 case "failed", "rejected":
-                    phase = .error
-                    errorMsg = "Verification failed. Please try again."
+                    // 1:1 with the web's fallback (NinConsentField.tsx
+                    // FAILED/REJECTED branch). Eventual-consistency
+                    // case: the consent webhook frequently lands at
+                    // the backend BEFORE the verification record is
+                    // queryable, so `getRequirementStatus` returns
+                    // FAILED on the first poll but the record IS
+                    // there. If we still hold the SDK's
+                    // `consentReference`, route to
+                    // `awaitingFinalSubmission` and let the next
+                    // `finalizeRequirement` call (triggered by the
+                    // user tapping Continue) re-fetch server-side —
+                    // it doesn't re-debit, the webhook already did.
+                    // Only surface a hard error when we have no
+                    // reference (truly nothing to retry with).
+                    if consentReference != nil {
+                        print("[KYC ConsentField] poll got \(s.requirementState) but we hold a reference — falling back to awaiting_final_submission (web parity)")
+                        phase = .awaitingFinalSubmission
+                        updateValueWith(autoCompleted: false, awaiting: true)
+                    } else {
+                        phase = .error
+                        errorMsg = "Verification failed. Please try again."
+                    }
                     return
                 default:
                     break    // still in progress — sleep and retry
                 }
             } catch {
+                print("[KYC ConsentField] poll attempt \(pollAttempt) threw: \(error)")
                 // Transient error — keep polling unless we've burned the budget.
             }
             try? await Task.sleep(nanoseconds: UInt64(pollInterval * 1_000_000_000))
         }
         // Out of attempts — gracefully drop into "awaiting" so the user
         // can still tap Continue and let the backend resolve server-side.
+        print("[KYC ConsentField] poll exhausted \(pollMax) attempts → awaiting_final_submission")
         phase = .awaitingFinalSubmission
         updateValueWith(autoCompleted: false, awaiting: true)
     }

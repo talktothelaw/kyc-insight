@@ -99,6 +99,15 @@ public struct RequirementStatusResponse: Decodable, Sendable {
     public let finalizedAt: String?
 }
 
+public struct FinalizeRequirementResponse: Decodable, Sendable {
+    public let success: Bool
+    public let error: Bool
+    public let message: String?
+    public let requirementState: String
+    public let kycSubmissionId: String?
+    public let alreadyFinalized: Bool?
+}
+
 @MainActor
 public final class ConsentAPI {
     private let client: GraphQLClient
@@ -226,6 +235,49 @@ public final class ConsentAPI {
             query: query, variables: vars,
             rootField: "getRequirementStatus",
             as: RequirementStatusResponse.self
+        )
+    }
+
+    /// V2 consent finalisation. 1:1 with the web's
+    /// `services/consentApi.ts:finalizeRequirement`. Use this — NOT
+    /// the legacy `KycSubmission` mutation — for any section whose
+    /// value carries a `consentAcceptanceId`. The legacy `KycPayloadV2`
+    /// input type doesn't define a `consentReference` field, so
+    /// submitting through that path raises "Field 'consentReference'
+    /// is not defined by type 'KycPayloadV2'".
+    ///
+    /// `additionalPayload` is opaque JSON merged with the stored
+    /// consent result server-side; we use it to carry the section's
+    /// kycPayload + optionalType so file/custom fields land alongside
+    /// the consent reference. NO raw NIN/BVN should ever be in it.
+    public func finalizeRequirement(
+        processToken: String,
+        consentAcceptanceId: String,
+        providerId: String?,
+        levelSlug: String?,
+        consentReference: String?,
+        additionalPayload: [String: Any]?
+    ) async throws -> FinalizeRequirementResponse {
+        let mutation = """
+        mutation finalizeRequirement($input: FinalizeRequirementInput!) {
+          finalizeRequirement(input: $input) {
+            success error message
+            requirementState kycSubmissionId alreadyFinalized
+          }
+        }
+        """
+        var input: [String: Any] = [
+            "processToken":        processToken,
+            "consentAcceptanceId": consentAcceptanceId,
+        ]
+        if let providerId        { input["providerId"]        = providerId }
+        if let levelSlug         { input["levelSlug"]         = levelSlug }
+        if let consentReference  { input["consentReference"]  = consentReference }
+        if let additionalPayload { input["additionalPayload"] = additionalPayload }
+        return try await client.execute(
+            query: mutation, variables: ["input": input],
+            rootField: "finalizeRequirement",
+            as: FinalizeRequirementResponse.self
         )
     }
 }

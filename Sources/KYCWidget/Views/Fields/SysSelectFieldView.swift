@@ -23,21 +23,28 @@ struct SysSelectFieldView: View {
     @State private var selectedOption: SysSelectOption?
 
     var body: some View {
-        FieldShell(
-            label: field.label, required: field.required,
-            helper: "Choose how you'd like to verify, then complete its inputs.",
-            error: session.fieldErrors[field.id]
-        ) {
-            VStack(spacing: 10) {
+        // Render the parent picker and the sub-fields as siblings,
+        // NOT nested inside a single FieldShell — otherwise the
+        // parent's error border (drawn around `content`) wraps the
+        // entire stack (picker + every sub-field's input area +
+        // helper text) and looks visually overwhelming. With sibling
+        // layout the red border hugs ONLY the picker, and the sub-
+        // field underneath carries its own field-shell visuals.
+        VStack(alignment: .leading, spacing: 12) {
+            FieldShell(
+                label: field.label, required: field.required,
+                helper: selectedOption == nil
+                    ? "Choose how you'd like to verify, then complete its inputs."
+                    : nil,
+                error: session.fieldErrors[field.id]
+            ) {
                 methodButton
-
-                if let opt = selectedOption {
-                    VStack(spacing: 12) {
-                        ForEach(opt.fields) { sub in
-                            SysSubFieldRow(parentField: field, parentSession: session, option: opt, subField: sub)
-                        }
+            }
+            if let opt = selectedOption {
+                VStack(spacing: 12) {
+                    ForEach(opt.fields) { sub in
+                        SysSubFieldRow(parentField: field, parentSession: session, option: opt, subField: sub)
                     }
-                    .padding(.top, 4)
                 }
             }
         }

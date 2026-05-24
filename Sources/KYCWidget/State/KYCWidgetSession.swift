@@ -322,15 +322,57 @@ public final class KYCWidgetSession: ObservableObject {
                 section: section,
                 values: values
             )
-            let api = KycSubmissionAPI(client: client)
-            do {
-                _ = try await api.submit(payload)
-                await refreshSchemaPreservingCursor()
-            } catch {
-                submissionError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
-                widget?.dispatchError(.submissionFailed(message: submissionError ?? "Unknown"))
-                phase = .ready
-                return
+
+            // V2 route — section carries a consent reference. Use the
+            // V2 `finalizeRequirement` mutation (Flow A). The legacy
+            // `KycSubmission` / `KycPayloadV2` input type doesn't
+            // define `consentReference` and rejects the request with
+            // 'Field "consentReference" is not defined by type
+            // "KycPayloadV2"'. Mirrors `widgetStore.ts:submitSection`
+            // Branch B in the web.
+            if let cid = payload.consentAcceptanceId {
+                print("[KYC Submit] V2 path — finalizeRequirement cid=\(cid.prefix(8))… ref=\(payload.consentReference?.prefix(8) ?? "-")")
+                let consentApi = ConsentAPI(client: client)
+                var additional: [String: Any] = [
+                    "kycPayload": payload.kycPayload.map { $0.toDictionary() },
+                ]
+                if let optionalType = payload.optionalType { additional["optionalType"] = optionalType }
+                do {
+                    let res = try await consentApi.finalizeRequirement(
+                        processToken: payload.processToken,
+                        consentAcceptanceId: cid,
+                        providerId: payload.providerId,
+                        levelSlug: payload.levelSlug,
+                        consentReference: payload.consentReference,
+                        additionalPayload: additional
+                    )
+                    let state = res.requirementState.lowercased()
+                    if state == "failed" || state == "rejected" {
+                        submissionError = res.message ?? "The requirement could not be completed."
+                        widget?.dispatchError(.submissionFailed(message: submissionError ?? "Unknown"))
+                        phase = .ready
+                        return
+                    }
+                    await refreshSchemaPreservingCursor()
+                } catch {
+                    submissionError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                    widget?.dispatchError(.submissionFailed(message: submissionError ?? "Unknown"))
+                    phase = .ready
+                    return
+                }
+            } else {
+                // V1 route — plain section with no consent. Legacy
+                // `KycSubmission` mutation accepts `KycPayloadV2`.
+                let api = KycSubmissionAPI(client: client)
+                do {
+                    _ = try await api.submit(payload)
+                    await refreshSchemaPreservingCursor()
+                } catch {
+                    submissionError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                    widget?.dispatchError(.submissionFailed(message: submissionError ?? "Unknown"))
+                    phase = .ready
+                    return
+                }
             }
         } else {
             try? await Task.sleep(nanoseconds: 400_000_000)
