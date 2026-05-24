@@ -289,7 +289,22 @@ public final class KYCWidgetSession: ObservableObject {
         widget?.dispatchSubmit(payload: section)
 
         if !config.demoMode {
-            // Real submission path.
+            // Fast paths: when the section is "self-completing" via a
+            // consent-based provider (BVN webhook, NIN/DL/Passport
+            // auto-completion, CAC self-completion), the kyc_v2 row was
+            // already written server-side. Calling submitKyc here would
+            // hit the legacy direct-verification switch — which doesn't
+            // know about these consent-based shapes — and reject with
+            // "Direct verification for bvn is not enabled" / "We don't
+            // have support for X yet" / similar. Web mirrors these in
+            // `widgetStore.submitSection` (Branches A/A2/A3).
+            if sectionIsAutoCompletedServerSide(section) {
+                await refreshSchemaPreservingCursor()
+                await advanceAfterSuccessfulSubmit(schema: schema, step: step)
+                return
+            }
+
+            // Real submission path for everything else.
             let payload = BuildSubmission.build(
                 processToken: schema.processToken,
                 step: step,
@@ -299,9 +314,6 @@ public final class KYCWidgetSession: ObservableObject {
             let api = KycSubmissionAPI(client: client)
             do {
                 _ = try await api.submit(payload)
-                // Refetch the schema so the just-submitted section's status
-                // pill flips to pending/approved without the user noticing
-                // (background fetch — UI keeps the cursor where it is).
                 await refreshSchemaPreservingCursor()
             } catch {
                 submissionError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
@@ -310,11 +322,60 @@ public final class KYCWidgetSession: ObservableObject {
                 return
             }
         } else {
-            // Demo path — fast-forward the cursor so the flow stays testable.
             try? await Task.sleep(nanoseconds: 400_000_000)
         }
-        phase = .ready
 
+        await advanceAfterSuccessfulSubmit(schema: schema, step: step)
+    }
+
+    /// Was the section already completed server-side via a consent-based
+    /// provider's webhook (so we MUST NOT call submitKyc)? 1:1 with the
+    /// web's three fast-path detectors in
+    /// `kyc-web-wiget-v2/src/state/widgetStore.ts` (Branches A / A2 / A3):
+    ///   • NIN / DL / Passport auto-completed (consent value carries
+    ///     `autoCompleted: true`)
+    ///   • CAC business lookup self-completed (value has kycSubmissionId)
+    ///   • BVN-only section (direct or sysSelect-wrapped) with value
+    ///     `"completed"` — the BVN provider's webhook writes kyc_v2
+    ///     directly, and calling submitKyc afterwards hits the legacy
+    ///     direct-verification switch which rejects with
+    ///     "Direct verification for bvn is not enabled for this business."
+    private func sectionIsAutoCompletedServerSide(_ section: WidgetSection) -> Bool {
+        let isSingleField = section.fields.count == 1
+        guard isSingleField, let only = section.fields.first else { return false }
+
+        // (1) NIN / DL / Passport — autoCompleted flag in the consent value.
+        if only.kind == .ninConsent || only.kind == .driversLicenseConsent || only.kind == .passportConsent {
+            return values[only.id]?.dictValue?["autoCompleted"]?.boolValue == true
+        }
+
+        // (2) CAC self-completed — value has a kycSubmissionId / _id.
+        if only.kind == .cacBusinessLookup {
+            let dict = values[only.id]?.dictValue
+            let id = dict?["kycSubmissionId"]?.stringValue ?? dict?["_id"]?.stringValue ?? ""
+            return !id.isEmpty
+        }
+
+        // (3) BVN — direct OR sysSelect-wrapped, in both cases value="completed".
+        if only.kind == .bvn {
+            return values[only.id]?.stringValue == "completed"
+        }
+        if only.kind == .sysSelect,
+           let composite = values[only.id]?.dictValue,
+           composite["selectedType"]?.stringValue == "bvn" {
+            let subValues = composite["values"]?.dictValue ?? [:]
+            // Any sub-value === "completed" satisfies — the BVN sub-field's
+            // single string value lives there after the mirror step.
+            return subValues.values.contains(where: { $0.stringValue == "completed" })
+        }
+        return false
+    }
+
+    /// Common section-advancement logic shared by the real submit path
+    /// and the fast-path skip. Fires lifecycle callbacks and moves the
+    /// cursor forward.
+    private func advanceAfterSuccessfulSubmit(schema: WidgetSchema, step: WidgetStep) async {
+        phase = .ready
         let steps = schema.steps
         let isLastSection = currentSectionIndex >= ((currentStep?.sections.count ?? 1) - 1)
         let isLastStep = currentStepIndex >= (steps.count - 1)

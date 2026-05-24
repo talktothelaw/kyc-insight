@@ -10,11 +10,14 @@ import SwiftUI
 ///      `WebConsentSheet`.
 ///   2. The i-gree consent-received page broadcasts
 ///      `BVN_CONSENT_RECEIVED` over the `bvnConsent` script-message
-///      handler (registered in `WebConsentSheet`); we react instantly,
-///      dismiss the sheet, and call `getBvnStatus` once to confirm.
-///   3. If the bridge never fires (user closed the window manually, or
-///      they're mid-flow), they hit **"Check status"** to query
-///      `getBvnStatus` themselves. No background polling.
+///      handler (registered in `WebConsentSheet`). This event is the
+///      **single source of truth** for closing the window and reacting
+///      to the consent — it triggers the sheet dismiss AND a confirming
+///      `getBvnStatus` call.
+///   3. If the user manually dismisses the sheet (swipe or Cancel) the
+///      bridge never fires, no status fetch happens, and the user must
+///      tap **"Check status"** to recheck. No background polling, no
+///      auto-fetch on bare dismiss — explicit user action only.
 @available(iOS 15.0, *)
 struct BvnFieldView: View {
     let field: WidgetField
@@ -45,21 +48,27 @@ struct BvnFieldView: View {
                 }
             }
         }
-        .sheet(isPresented: $showWebSheet,
-               onDismiss: { Task { await checkStatusOnDismiss() } }) {
+        .sheet(isPresented: $showWebSheet) {
             if let url = redirectURL {
-                // NIBSS hosts the BVN entry page. The consent-received page
-                // broadcasts `BVN_CONSENT_RECEIVED` via the i-gree contract;
-                // `WebConsentSheet` listens on the `bvnConsent` /
-                // `BVNConsent` / `kycBridge` / `KycBridge` script handlers
-                // and auto-resolves success the moment it arrives. The
-                // user can also dismiss manually and tap "Check status".
+                // The i-gree consent-received page broadcasts
+                // `BVN_CONSENT_RECEIVED` via the bridge — that event is
+                // the SINGLE source of truth for "consent done, close
+                // the window, fetch status." Manual Cancel and
+                // swipe-to-dismiss intentionally do NOT auto-fetch;
+                // the user must tap "Check status" if they want to
+                // recheck after dismissing without completing.
                 WebConsentSheet(
                     initialURL: url,
                     successURLPrefixes: [],
                     cancelURLPrefixes:  []
-                ) { _ in
+                ) { result in
                     showWebSheet = false
+                    if case .success = result {
+                        // Bridge fired → confirm with backend. We never
+                        // trust the bridge payload for KYC data (contract
+                        // §6); always re-fetch.
+                        Task { await checkStatus() }
+                    }
                 }
             }
         }
@@ -300,15 +309,6 @@ struct BvnFieldView: View {
     /// Cancel. Treats every dismiss as a free "Check status" because the
     /// bridge already told us consent is done, and a manual cancel often
     /// means the user finished anyway.
-    private func checkStatusOnDismiss() async {
-        print("[KYC BvnField] sheet onDismiss — phase=\(String(describing: phase))")
-        guard phase == .external else {
-            print("[KYC BvnField] sheet onDismiss — SKIP, not external phase")
-            return
-        }
-        await checkStatus()
-    }
-
     private func apply(_ status: BvnStatus) {
         switch status.state {
         case .completed:
