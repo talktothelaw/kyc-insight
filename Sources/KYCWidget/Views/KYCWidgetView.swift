@@ -216,6 +216,12 @@ struct KYCWidgetView: View {
                             publicKey:    session.config.publicKey,
                             endpoint:     session.config.gqlEndpoint
                         )
+                    } else if section.requiresUpdate {
+                        // Backend stamped some required field as
+                        // unsupplied — surface the reason so the user
+                        // understands why a previously-engaged section
+                        // is asking for more input.
+                        LevelUpdateBannerView(reason: section.requiresUpdateReason)
                     }
                     if section.fields.isEmpty {
                         Text("This section has no fields.")
@@ -223,7 +229,20 @@ struct KYCWidgetView: View {
                             .foregroundColor(.secondary)
                     }
                     VStack(spacing: 14) {
-                        ForEach(section.fields) { field in
+                        // On `requiresUpdate` sections, hide fields the
+                        // backend stamped `alreadySupplied: true` — the
+                        // user shouldn't be asked to retype what the
+                        // merchant already has on the kyc_v2 row. The
+                        // hidden fields stay in `section.fields` so
+                        // validation + submission see the same shape;
+                        // `SectionValidator` skips them (satisfied) and
+                        // `BuildSubmission`'s empty-value filter keeps
+                        // them off the wire so the backend keeps the
+                        // prior value untouched.
+                        let visibleFields = section.requiresUpdate
+                            ? section.fields.filter { $0.alreadySupplied != true }
+                            : section.fields
+                        ForEach(visibleFields) { field in
                             FieldRenderer(field: field, session: session)
                         }
                     }

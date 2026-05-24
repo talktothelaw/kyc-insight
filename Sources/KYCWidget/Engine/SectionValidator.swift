@@ -122,10 +122,15 @@ enum SectionValidator {
     }
 
     /// Validate every field in the section. Returns a `{fieldId: error}`
-    /// map containing only failing fields.
+    /// map containing only failing fields. Skips fields the backend
+    /// stamped `alreadySupplied: true` on a `requiresUpdate` section —
+    /// they're hidden in the UI and the backend already has the value
+    /// on the kyc_v2 row, so demanding them again would fight the
+    /// "don't make the user retype" rule.
     static func validate(section: WidgetSection, values: [String: AnyCodable]) -> [String: String] {
         var errors: [String: String] = [:]
         for field in section.fields {
+            if section.requiresUpdate && field.alreadySupplied == true { continue }
             if let err = validate(field: field, value: values[field.id]) {
                 errors[field.id] = err
             }

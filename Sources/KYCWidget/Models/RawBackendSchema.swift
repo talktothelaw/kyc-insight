@@ -18,6 +18,13 @@ struct RawField: Decodable {
     /// so the normalizer can branch on the field's `inputType`.
     let options: [AnyCodable]?
     let required: Bool?
+    /// Server-stamped: does the customer's existing data satisfy this
+    /// specific field? Computed by
+    /// `kyc-backend/src/helpers/fieldSupplyResolver.ts:stampAlreadySuppliedOnLevel`
+    /// from the matching kyc_v2 row's status + kycPayload. Lets the
+    /// widget render only what's still missing on a previously-
+    /// approved tier without guessing.
+    let alreadySupplied: Bool?
 }
 
 struct RawProviderData: Decodable {

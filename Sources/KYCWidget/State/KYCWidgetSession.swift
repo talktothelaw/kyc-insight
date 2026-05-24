@@ -160,11 +160,15 @@ public final class KYCWidgetSession: ObservableObject {
     }
 
     /// Find the first not-yet-completed section. Mirrors the web's
-    /// `findResumePosition`.
+    /// `findResumePosition`. `requiresUpdate` sections count as "needs
+    /// work" so the cursor lands on the new requirements added to a
+    /// previously-approved tier.
     private func findResumePosition(_ schema: WidgetSchema) -> (step: Int, section: Int) {
         for (stepIdx, step) in schema.steps.enumerated() {
             for (secIdx, section) in step.sections.enumerated() {
-                if section.status == .initialized || section.status == .rejected {
+                if section.status == .initialized
+                    || section.status == .rejected
+                    || section.requiresUpdate {
                     return (stepIdx, secIdx)
                 }
             }
@@ -203,31 +207,38 @@ public final class KYCWidgetSession: ObservableObject {
     public var currentSection: WidgetSection? { currentStep?.sections[safe: currentSectionIndex] }
 
     /// True when the current section is read-only — already submitted
-    /// (`approved` or `pending`). Mirrors `WidgetRoot.tsx:isReadOnlySection`.
+    /// (`approved` or `pending`) AND NOT flagged by the backend's
+    /// per-field `alreadySupplied` stamps as needing more input.
+    /// Mirrors `WidgetRoot.tsx:isReadOnlySection`.
     public var isCurrentSectionReadOnly: Bool {
         guard let s = currentSection else { return false }
+        if s.requiresUpdate { return false }
         return s.status == .approved || s.status == .pending
     }
 
-    /// Frontier for the *current* step: the first section index the user
-    /// is allowed to navigate forward to. Indices > frontier are locked
-    /// (no skipping ahead). Indices < frontier are completed and clickable.
-    /// Mirrors `widgetStore.getNavigableFrontier`.
+    /// Frontier for the *current* step. `requiresUpdate` sections
+    /// count as "needs work" so the user can navigate to them.
     public var currentStepFrontier: Int {
         guard let step = currentStep else { return -1 }
         if step.sections.isEmpty { return -1 }
-        for (i, s) in step.sections.enumerated()
-        where s.status != .approved && s.status != .pending { return i }
+        for (i, s) in step.sections.enumerated() {
+            if (s.status != .approved && s.status != .pending) || s.requiresUpdate {
+                return i
+            }
+        }
         return step.sections.count - 1
     }
 
-    /// Tier frontier — the first step the user hasn't fully completed.
-    /// Mirrors `widgetStore.getStepFrontier`.
+    /// Tier frontier — the first step that's not fully completed
+    /// OR has any section flagged `requiresUpdate`.
     public var tierFrontier: Int {
         guard let schema, !schema.steps.isEmpty else { return -1 }
         for (i, step) in schema.steps.enumerated() {
             if step.sections.isEmpty { return i }
-            let allDone = step.sections.allSatisfy { $0.status == .approved || $0.status == .pending }
+            if step.requiresUpdate { return i }
+            let allDone = step.sections.allSatisfy {
+                ($0.status == .approved || $0.status == .pending) && !$0.requiresUpdate
+            }
             if !allDone { return i }
         }
         return schema.steps.count - 1

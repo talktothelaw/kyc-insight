@@ -57,6 +57,13 @@ public struct WidgetField: Identifiable, Sendable, Codable {
     /// Sub-options for `sysSelect`. Empty for other kinds.
     public let sysSelectOptions: [SysSelectOption]?
 
+    /// Mirrored from the backend's `field.alreadySupplied` stamp
+    /// (`kyc-backend/src/helpers/fieldSupplyResolver.ts`). True when the
+    /// customer's existing approved/pending data satisfies this field
+    /// and the user doesn't need to fill it again. nil when the
+    /// backend didn't stamp.
+    public let alreadySupplied: Bool?
+
     public init(
         id: String,
         name: String,
@@ -65,7 +72,8 @@ public struct WidgetField: Identifiable, Sendable, Codable {
         required: Bool,
         options: [WidgetOption]? = nil,
         kycType: String? = nil,
-        sysSelectOptions: [SysSelectOption]? = nil
+        sysSelectOptions: [SysSelectOption]? = nil,
+        alreadySupplied: Bool? = nil
     ) {
         self.id = id
         self.name = name
@@ -75,7 +83,13 @@ public struct WidgetField: Identifiable, Sendable, Codable {
         self.options = options
         self.kycType = kycType
         self.sysSelectOptions = sysSelectOptions
+        self.alreadySupplied = alreadySupplied
     }
+}
+
+public enum RequiresUpdateReason: String, Sendable, Codable {
+    case pending_placeholder
+    case requirements_changed
 }
 
 public struct WidgetSection: Identifiable, Sendable, Codable {
@@ -89,15 +103,27 @@ public struct WidgetSection: Identifiable, Sendable, Codable {
     /// by field id. Used to seed the widget's `values` so rejected sections
     /// come up with the user's prior data already in place.
     public let submittedValues: [String: AnyCodable]?
+    /// Client-derived from the backend's per-field `alreadySupplied`
+    /// stamps. True when ANY required field comes back unsupplied AND
+    /// the section's status is approved/pending (user has already
+    /// engaged with it). UI keeps the form editable and shows the
+    /// LevelUpdateBannerView.
+    public let requiresUpdate: Bool
+    /// Why `requiresUpdate` fired — drives banner copy.
+    public let requiresUpdateReason: RequiresUpdateReason?
 
     public init(
         id: String, name: String, status: WidgetStatus,
         providerId: String, providerType: String,
-        fields: [WidgetField], submittedValues: [String: AnyCodable]? = nil
+        fields: [WidgetField], submittedValues: [String: AnyCodable]? = nil,
+        requiresUpdate: Bool = false,
+        requiresUpdateReason: RequiresUpdateReason? = nil
     ) {
         self.id = id; self.name = name; self.status = status
         self.providerId = providerId; self.providerType = providerType
         self.fields = fields; self.submittedValues = submittedValues
+        self.requiresUpdate = requiresUpdate
+        self.requiresUpdateReason = requiresUpdateReason
     }
 }
 
@@ -107,6 +133,18 @@ public struct WidgetStep: Identifiable, Sendable, Codable {
     public let slug: String
     public let status: WidgetStatus
     public let sections: [WidgetSection]
+    /// Roll-up: at least one section needs the user's input. Drives the
+    /// tier-level frontier so the user can't skip past it.
+    public let requiresUpdate: Bool
+
+    public init(
+        id: String, name: String, slug: String, status: WidgetStatus,
+        sections: [WidgetSection], requiresUpdate: Bool = false
+    ) {
+        self.id = id; self.name = name; self.slug = slug
+        self.status = status; self.sections = sections
+        self.requiresUpdate = requiresUpdate
+    }
 }
 
 public struct WidgetSchema: Sendable, Codable {

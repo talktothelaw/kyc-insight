@@ -17,22 +17,67 @@ enum SchemaNormalizer {
             let sections: [WidgetSection] = level.providersInfo.map { provider in
                 let fields = normalizeProviderFields(provider: provider)
                 let submittedValues = extractSubmittedValues(provider: provider, fields: fields)
+                let status = normalizeStatus(provider.status)
+
+                // Backend-authoritative "needs update" derivation —
+                // 1:1 mirror of `kyc-web-wiget-v2/src/engine/normalize.ts`.
+                // Trust `field.alreadySupplied` from the backend
+                // (`fieldSupplyResolver.ts`). Three guards before
+                // flipping requiresUpdate:
+                //
+                //   1. Backend must be stamping (some field === true).
+                //   2. Status must be approved OR pending (user
+                //      engaged).
+                //   3. Plain-text evidence: if the section is approved
+                //      but ZERO plain-text fields are stamped true
+                //      (only opaque kinds like sysSelect / consent
+                //      did), that's a backend matching/projection bug
+                //      — likely the consent sub-row was matched
+                //      instead of the form-fields row. Trust the
+                //      `approved` status; suppress requiresUpdate.
+                let hasAnyStampedTrue = fields.contains { $0.alreadySupplied == true }
+                let hasMissingRequired = fields.contains { $0.required && $0.alreadySupplied != true }
+                let isEngagedStatus = status == .approved || status == .pending
+                let textKinds: Set<FieldKind> = [
+                    .text, .email, .number, .date, .datetime, .time,
+                    .url, .password, .select, .radio, .checkbox, .location,
+                ]
+                let hasPlainTextFields = fields.contains { textKinds.contains($0.kind) }
+                let hasAnyPlainTextSupplied = fields.contains {
+                    textKinds.contains($0.kind) && $0.alreadySupplied == true
+                }
+                let looksLikeServerDataGap = status == .approved
+                    && hasPlainTextFields
+                    && !hasAnyPlainTextSupplied
+                let requiresUpdate = !looksLikeServerDataGap
+                    && hasAnyStampedTrue
+                    && hasMissingRequired
+                    && isEngagedStatus
+                let reason: RequiresUpdateReason? = requiresUpdate
+                    ? (status == .approved ? .requirements_changed : .pending_placeholder)
+                    : nil
+
                 return WidgetSection(
                     id: provider._id,
                     name: formatLabel(provider.service),
-                    status: normalizeStatus(provider.status),
+                    status: status,
                     providerId: provider._id,
                     providerType: provider.type,
                     fields: fields,
-                    submittedValues: submittedValues.isEmpty ? nil : submittedValues
+                    submittedValues: submittedValues.isEmpty ? nil : submittedValues,
+                    requiresUpdate: requiresUpdate,
+                    requiresUpdateReason: reason
                 )
             }
+            // Roll-up: tier needs update if any section does.
+            let stepRequiresUpdate = sections.contains { $0.requiresUpdate }
             return WidgetStep(
                 id: level.levelSlug,
                 name: formatLabel(level.levelName),
                 slug: level.levelSlug,
                 status: normalizeStatus(level.status),
-                sections: sections
+                sections: sections,
+                requiresUpdate: stepRequiresUpdate
             )
         }
         return WidgetSchema(processToken: raw.processToken, steps: steps)
@@ -135,7 +180,8 @@ enum SchemaNormalizer {
             required: raw.required ?? false,
             options: options,
             kycType: kycType,
-            sysSelectOptions: sysSelectOptions
+            sysSelectOptions: sysSelectOptions,
+            alreadySupplied: raw.alreadySupplied
         )
     }
 
