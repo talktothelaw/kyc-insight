@@ -134,6 +134,7 @@ enum SchemaNormalizer {
         case "__nin_consent_step__":              return .ninConsent
         case "__drivers_license_consent_step__":  return .driversLicenseConsent
         case "__passport_consent_step__":         return .passportConsent
+        case "__cac_consent_step__":              return .cacConsent
         case "__cac_business_package_step__":     return .cacBusinessLookup
         default: return .unknown
         }

@@ -36,6 +36,15 @@ public final class KYCWidgetSession: ObservableObject {
     private let client: GraphQLClient
     weak var widget: KYCWidget?
 
+    /// Slugs of steps we've already fired `onLevelApproved` for in
+    /// this session. Used by `dispatchLevelApprovalTransitions` to
+    /// fire ONCE per transition (not on every refresh). Seeded with
+    /// already-approved steps on the very first load so the host
+    /// doesn't see a "level approved" event for a level that was
+    /// already done when the widget opened.
+    private var approvedDispatchedSlugs: Set<String> = []
+    private var didSeedApprovedSlugs = false
+
     public init(config: KYCWidgetConfig) {
         self.config = config
         self.client = GraphQLClient(endpoint: config.gqlEndpoint, publicKey: config.publicKey)
@@ -73,6 +82,11 @@ public final class KYCWidgetSession: ObservableObject {
             self.currentStepIndex = resume.step
             self.currentSectionIndex = resume.section
             self.phase = .ready
+            // Seed on first load so we don't fire onLevelApproved for
+            // levels that were already done when the widget opened;
+            // subsequent refreshes report only NEW transitions.
+            dispatchLevelApprovalTransitions(seedOnly: !didSeedApprovedSlugs)
+            didSeedApprovedSlugs = true
             widget?.dispatchReady()
             if let step = schema.steps[safe: resume.step] {
                 widget?.dispatchLevelChange(KYCWidgetLevel(slug: step.slug, index: resume.step))
@@ -114,6 +128,14 @@ public final class KYCWidgetSession: ObservableObject {
             self.currentStepIndex = resume.step
             self.currentSectionIndex = resume.section
             self.phase = .ready
+            // Diff the new schema against tracked approvals so newly-
+            // approved levels fire `onLevelApproved` even when the
+            // approval came from the backend (e.g. merchant manually
+            // approved a pending section after submit), not just from
+            // the user's own submission. First-ever load is `seedOnly`
+            // so pre-existing approvals don't fire spuriously.
+            dispatchLevelApprovalTransitions(seedOnly: !didSeedApprovedSlugs)
+            didSeedApprovedSlugs = true
             widget?.dispatchReady()
             if let step = schema.steps[safe: resume.step] {
                 widget?.dispatchLevelChange(KYCWidgetLevel(slug: step.slug, index: resume.step))
@@ -159,6 +181,42 @@ public final class KYCWidgetSession: ObservableObject {
         completed = wasCompleted
     }
 
+    /// Fire `onLevelApproved` for any step that has just transitioned
+    /// to fully-approved since the last time we checked. Mirrors the
+    /// web's `main.tsx:91-104` subscription — fires ONCE per
+    /// transition, not on every schema refresh.
+    ///
+    /// "Fully approved" matches the FE frontier semantics: every
+    /// section is `.approved` AND has no `requiresUpdate` flag
+    /// (otherwise the merchant added new requirements after approval
+    /// and the level isn't really done).
+    ///
+    /// `seedOnly` is true for the very first load — we seed the
+    /// "already dispatched" set with whatever's currently approved so
+    /// the host doesn't see a fake "level approved" event for a level
+    /// that was approved BEFORE the widget opened.
+    private func dispatchLevelApprovalTransitions(seedOnly: Bool = false) {
+        guard let schema else { return }
+        for (idx, step) in schema.steps.enumerated() {
+            guard !step.sections.isEmpty else { continue }
+            let allApproved = step.sections.allSatisfy {
+                $0.status == .approved && !$0.requiresUpdate
+            }
+            if !allApproved {
+                // Step is no longer fully approved — clear it from the
+                // dispatched set so a later re-approval fires again.
+                approvedDispatchedSlugs.remove(step.slug)
+                continue
+            }
+            if approvedDispatchedSlugs.contains(step.slug) { continue }
+            approvedDispatchedSlugs.insert(step.slug)
+            if seedOnly { continue }
+            widget?.dispatchLevelApproved(
+                KYCWidgetLevel(slug: step.slug, index: idx)
+            )
+        }
+    }
+
     /// Find the first not-yet-completed section. Mirrors the web's
     /// `findResumePosition`. `requiresUpdate` sections count as "needs
     /// work" so the cursor lands on the new requirements added to a
@@ -190,9 +248,21 @@ public final class KYCWidgetSession: ObservableObject {
     public func goBack() {
         if currentSectionIndex > 0 {
             currentSectionIndex -= 1
-        } else if currentStepIndex > 0 {
-            currentStepIndex -= 1
-            currentSectionIndex = (schema?.steps[safe: currentStepIndex]?.sections.count ?? 1) - 1
+            return
+        }
+        guard currentStepIndex > 0 else { return }
+        // Crossing a level boundary backward — fire onLevelChange so
+        // the host sees the transition, matching the web widget's
+        // subscription that dispatches on ANY currentStepIndex change
+        // (forward or backward). Without this the host would think
+        // the user is still on the prior level even though
+        // `currentStep` now points one level back.
+        currentStepIndex -= 1
+        currentSectionIndex = (schema?.steps[safe: currentStepIndex]?.sections.count ?? 1) - 1
+        if let step = currentStep {
+            widget?.dispatchLevelChange(
+                KYCWidgetLevel(slug: step.slug, index: currentStepIndex)
+            )
         }
     }
 
@@ -427,17 +497,24 @@ public final class KYCWidgetSession: ObservableObject {
     /// Common section-advancement logic shared by the real submit path
     /// and the fast-path skip. Fires lifecycle callbacks and moves the
     /// cursor forward.
+    ///
+    /// `onLevelApproved` is NOT dispatched inline here — the post-
+    /// submit `refreshSchemaPreservingCursor` re-runs `loadSchema`,
+    /// which calls `dispatchLevelApprovalTransitions`, which compares
+    /// the fresh step statuses against `approvedDispatchedSlugs` and
+    /// fires for any step that just flipped to fully-approved. That
+    /// path catches BOTH cases:
+    ///   • user's own submit completed the last section of a step,
+    ///   • merchant (or auto-approval) approved a previously-pending
+    ///     section so the step is now fully approved.
+    /// The inline call we used to make here only handled the first
+    /// case and would double-fire once the refresh detector picked up
+    /// the same transition.
     private func advanceAfterSuccessfulSubmit(schema: WidgetSchema, step: WidgetStep) async {
         phase = .ready
         let steps = schema.steps
         let isLastSection = currentSectionIndex >= ((currentStep?.sections.count ?? 1) - 1)
         let isLastStep = currentStepIndex >= (steps.count - 1)
-
-        if let stepSlug = currentStep?.slug, isLastSection {
-            widget?.dispatchLevelApproved(
-                KYCWidgetLevel(slug: stepSlug, index: currentStepIndex)
-            )
-        }
 
         if isLastSection && isLastStep {
             completed = true

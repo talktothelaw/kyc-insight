@@ -23,7 +23,6 @@ struct ConsentFieldView: View {
     @State private var phase: Phase = .idle
     @State private var errorMsg: String?
     @State private var consentAcceptanceId: String?
-    @State private var consentSessionId: String = ""
     @State private var consentReference: String?
 
     /// External-mode WKWebView sheet.
@@ -38,8 +37,16 @@ struct ConsentFieldView: View {
     @State private var identifierValues: [String: String] = [:]
     @State private var otpCode: String = ""
     @State private var phoneHint: String?
+    // User-entered phone for the conditional `.phoneSupply` step. Only
+    // populated when the issuer lookup returned no phone-on-record.
+    @State private var userPhone: String = ""
     @State private var resendMessage: String?
     @State private var resendCooldownEndsAt: Date?
+
+    /// Disclosure (internal-mode only). The backend requires
+    /// `acceptConsentDisclosure` before any OTP can be requested.
+    @State private var disclosureScope: ConsentDisclosureScope?
+    @State private var acceptingDisclosure: Bool = false
 
     /// Polling state.
     @State private var pollAttempt: Int = 0
@@ -49,8 +56,14 @@ struct ConsentFieldView: View {
     enum Phase: Equatable {
         case idle
         case initiating
+        case disclosure              // internal-mode disclosure overlay
         case internalIdentifier      // collecting NIN / BVN / etc.
         case submitting
+        // Conditional phone-supply step. Reached ONLY when the backend
+        // returns `code: 'PHONE_REQUIRED'` from submitConsentIdentifier,
+        // meaning the provider record has no phone on file. 1:1 with
+        // the web's `phone` Phase in ConsentOverlay.tsx.
+        case phoneSupply
         case otpInput
         case verifying
         case external                // WKWebView open
@@ -65,6 +78,7 @@ struct ConsentFieldView: View {
         case .ninConsent:              return .nin_consent
         case .driversLicenseConsent:   return .drivers_license_consent
         case .passportConsent:         return .passport_consent
+        case .cacConsent:              return .cac_consent
         case .bvn:                     return .bvn_consent
         default:                       return .nin_consent
         }
@@ -75,6 +89,7 @@ struct ConsentFieldView: View {
         case .ninConsent:            return "NIN"
         case .driversLicenseConsent: return "Driver's License"
         case .passportConsent:       return "International Passport"
+        case .cacConsent:            return "CAC Business"
         case .bvn:                   return "BVN"
         default:                     return "ID"
         }
@@ -129,11 +144,15 @@ struct ConsentFieldView: View {
         case .initiating:
             actionButton(title: "Starting…", loading: true) {}
                 .disabled(true)
+        case .disclosure:
+            disclosurePanel
         case .internalIdentifier:
             internalIdentifierForm
         case .submitting:
-            actionButton(title: "Sending OTP…", loading: true) {}
+            actionButton(title: userPhone.isEmpty ? "Looking up…" : "Sending OTP…", loading: true) {}
                 .disabled(true)
+        case .phoneSupply:
+            phoneSupplyForm
         case .otpInput:
             otpForm
         case .verifying:
@@ -189,6 +208,73 @@ struct ConsentFieldView: View {
         }
     }
 
+    // MARK: - Disclosure panel (internal-mode prerequisite)
+
+    /// Shows the disclosure scope returned by `initConsent` and gates the
+    /// identifier form on `acceptConsentDisclosure`. Mirrors the web's
+    /// disclosure overlay in `components/fields/InternalConsentField.tsx`.
+    private var disclosurePanel: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if let summary = disclosureScope?.summary, !summary.isEmpty {
+                Text(summary)
+                    .font(.system(size: 12))
+                    .foregroundColor(.secondary)
+            }
+            if let fields = disclosureScope?.fields, !fields.isEmpty {
+                Text("You'll share:").font(.system(size: 12, weight: .semibold))
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(fields, id: \.key) { f in
+                        HStack(alignment: .top, spacing: 6) {
+                            Image(systemName: "checkmark.circle.fill")
+                                .foregroundColor(KYCBrand.primary)
+                                .font(.system(size: 11))
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(f.label).font(.system(size: 12, weight: .medium))
+                                if let d = f.description, !d.isEmpty {
+                                    Text(d).font(.system(size: 11)).foregroundColor(.secondary)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            Button { Task { await acceptDisclosure() } } label: {
+                HStack(spacing: 8) {
+                    if acceptingDisclosure { ProgressView().tint(.white) }
+                    Image(systemName: "hand.thumbsup.fill").foregroundColor(.white)
+                    Text(acceptingDisclosure ? "Recording consent…" : "I agree, continue")
+                        .foregroundColor(.white)
+                        .font(.system(size: 14, weight: .semibold))
+                }
+                .frame(maxWidth: .infinity).padding(.vertical, 12)
+                .background(KYCBrand.primary).cornerRadius(10)
+            }
+            .disabled(acceptingDisclosure)
+        }
+    }
+
+    private func acceptDisclosure() async {
+        guard let cid = consentAcceptanceId, let scope = disclosureScope else { return }
+        acceptingDisclosure = true
+        errorMsg = nil
+        defer { acceptingDisclosure = false }
+        do {
+            let ua = "iOS/\(UIDevice.current.systemVersion) KYCWidget"
+            let res = try await api.acceptConsentDisclosure(
+                consentAcceptanceId: cid,
+                scopeId: scope.scopeId,
+                userAgent: ua
+            )
+            if res.success {
+                phase = .internalIdentifier
+            } else {
+                errorMsg = res.message ?? "Could not record consent."
+            }
+        } catch {
+            errorMsg = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+        }
+    }
+
     // MARK: - Internal identifier form (NIN / BVN input)
 
     private var internalIdentifierForm: some View {
@@ -207,7 +293,7 @@ struct ConsentFieldView: View {
                 }
             }
             Button { Task { await submitIdentifier() } } label: {
-                Text("Submit \(brandName)")
+                Text("Continue")
                     .frame(maxWidth: .infinity)
                     .foregroundColor(.white)
                     .font(.system(size: 14, weight: .semibold))
@@ -216,6 +302,37 @@ struct ConsentFieldView: View {
                     .cornerRadius(10)
             }
             .disabled(identifierFields.contains { ($0.required) && (identifierValues[$0.key]?.isEmpty ?? true) })
+        }
+    }
+
+    /// Conditional phone-supply form. Rendered ONLY when the issuer
+    /// lookup returned no phone-on-record (`code: PHONE_REQUIRED`).
+    /// 1:1 with the web's `PhoneStep` in ConsentOverlay.tsx.
+    private var phoneSupplyForm: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Provide a phone number")
+                .font(.system(size: 14, weight: .semibold))
+            Text("We found your record but the issuer has no phone number on file for this \(brandName). Please supply a phone number so we can send the verification code by SMS.")
+                .font(.system(size: 12)).foregroundColor(.secondary)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Phone number").font(.system(size: 13, weight: .semibold))
+                FieldBox {
+                    TextField("08012345678", text: $userPhone)
+                        .keyboardType(.phonePad)
+                        .textContentType(.telephoneNumber)
+                        .font(.system(size: 15, design: .monospaced))
+                }
+            }
+            Button { Task { await submitPhone() } } label: {
+                Text("Send OTP")
+                    .frame(maxWidth: .infinity)
+                    .foregroundColor(.white)
+                    .font(.system(size: 14, weight: .semibold))
+                    .padding(.vertical, 12)
+                    .background(KYCBrand.primary)
+                    .cornerRadius(10)
+            }
+            .disabled(userPhone.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         }
     }
 
@@ -294,11 +411,16 @@ struct ConsentFieldView: View {
                 return
             }
             consentAcceptanceId = cid
-            consentSessionId = res.consentSessionId ?? ""
             if res.mode == "internal" {
                 identifierFields = res.identifierFields ?? defaultIdentifierFields()
                 identifierValues = [:]
-                phase = .internalIdentifier
+                disclosureScope  = res.disclosureScope
+                // If the backend provided a disclosure scope, the user MUST
+                // accept it before we can submit the identifier (the OTP
+                // mutation is gated on `acceptConsentDisclosure` server-side).
+                // No scope → backend doesn't require disclosure for this
+                // consent type; go straight to identifier entry.
+                phase = (disclosureScope != nil) ? .disclosure : .internalIdentifier
             } else if let cfg = res.widgetConfig, let url = URL(string: cfg.widgetUrl) {
                 externalURL = url
                 externalClientId = cfg.clientId
@@ -330,20 +452,34 @@ struct ConsentFieldView: View {
         )]
     }
 
-    private func submitIdentifier() async {
+    /// Submits the identifier to the backend. On first call `suppliedPhone`
+    /// is `nil` so the backend defers to the issuer's phone-on-record. If
+    /// the issuer has no phone the backend returns `code: 'PHONE_REQUIRED'`
+    /// and we land on `.phoneSupply`; the user enters a phone there and
+    /// this method is re-invoked with that value. 1:1 with the web's
+    /// `handleSubmitIdentifier` in ConsentOverlay.tsx.
+    private func submitIdentifier(suppliedPhone: String? = nil) async {
         guard let cid = consentAcceptanceId else { return }
+        let cameFrom: Phase = suppliedPhone != nil ? .phoneSupply : .internalIdentifier
         phase = .submitting
         errorMsg = nil
         do {
             let res = try await api.submitConsentIdentifier(
-                processToken: session.schema?.processToken ?? "",
                 consentAcceptanceId: cid,
-                sessionId: consentSessionId,
+                phoneNumber: suppliedPhone,
                 identifier: identifierValues
             )
             if !res.success {
+                // Provider has no phone on file → drop to the dedicated
+                // phone-supply step. Not an error to the user; just a
+                // branch in the flow.
+                if res.code == "PHONE_REQUIRED" {
+                    errorMsg = nil
+                    phase = .phoneSupply
+                    return
+                }
                 errorMsg = res.message ?? "Could not submit \(brandName)."
-                phase = .internalIdentifier
+                phase = cameFrom
                 return
             }
             phoneHint = res.phoneHint
@@ -353,8 +489,20 @@ struct ConsentFieldView: View {
             phase = .otpInput
         } catch {
             errorMsg = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
-            phase = .internalIdentifier
+            phase = cameFrom
         }
+    }
+
+    /// Phone-supply step's submit handler. Validates locally and re-calls
+    /// `submitIdentifier(suppliedPhone:)` so the backend can route the OTP
+    /// to the user-supplied number.
+    private func submitPhone() async {
+        let trimmed = userPhone.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            errorMsg = "Please enter a phone number to receive the verification code."
+            return
+        }
+        await submitIdentifier(suppliedPhone: trimmed)
     }
 
     private func verifyOtp() async {
@@ -363,9 +511,7 @@ struct ConsentFieldView: View {
         errorMsg = nil
         do {
             let res = try await api.verifyConsentIdentifierOtp(
-                processToken: session.schema?.processToken ?? "",
                 consentAcceptanceId: cid,
-                sessionId: consentSessionId,
                 otpCode: otpCode
             )
             if !res.success {
@@ -391,9 +537,7 @@ struct ConsentFieldView: View {
         guard let cid = consentAcceptanceId else { return }
         do {
             let res = try await api.resendConsentIdentifierOtp(
-                processToken: session.schema?.processToken ?? "",
-                consentAcceptanceId: cid,
-                sessionId: consentSessionId
+                consentAcceptanceId: cid
             )
             if res.success {
                 resendMessage = "A new code has been sent."

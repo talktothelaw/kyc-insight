@@ -9,7 +9,7 @@ public enum FieldKind: String, Sendable, Codable {
     case url, password
     case select, checkbox, radio, file, image
     case sysSelect, bvn, ninConsent
-    case driversLicenseConsent, passportConsent
+    case driversLicenseConsent, passportConsent, cacConsent
     case cacBusinessLookup
     case liveness, location
     case unknown

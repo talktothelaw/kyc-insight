@@ -130,12 +130,21 @@ struct DateFieldView: View {
         let f = DateFormatter()
         f.dateFormat = "yyyy-MM-dd"
         f.locale = .init(identifier: "en_US_POSIX")
+        // Pin to the user's current time zone so the calendar day the user
+        // SAW in the picker is the day we serialize. Without this, native
+        // SwiftUI DatePicker stores a Date (UTC-anchored) and the formatter
+        // re-interprets it in device locale — users in UTC+1 picking
+        // "2026-05-24" could send "2026-05-23" if the underlying Date
+        // landed at "2026-05-23T23:00:00Z". Mirrors the web's custom
+        // segmented DatePicker which avoids the Date() round-trip entirely.
+        f.timeZone = .current
         return f
     }()
     private static let datetimeIso: DateFormatter = {
         let f = DateFormatter()
         f.dateFormat = "yyyy-MM-dd'T'HH:mm"
         f.locale = .init(identifier: "en_US_POSIX")
+        f.timeZone = .current
         return f
     }()
 }

@@ -58,7 +58,11 @@ final class CacAPI {
         )
     }
 
-    func executeChecks(processToken: String, providerId: String?, levelSlug: String?, businessId: String, checks: [String]) async throws -> CacExecuteResponse {
+    /// Backend `ExecuteCacBusinessChecksInput` requires `companyId: String!`
+    /// AND `selectedBusiness: JSON!` (audit snapshot). The earlier
+    /// `selectedBusinessId` field never existed — sending it raises
+    /// "Field 'selectedBusinessId' is not defined" before the resolver runs.
+    func executeChecks(processToken: String, providerId: String?, levelSlug: String?, companyId: String, selectedBusiness: [String: Any], checks: [String]) async throws -> CacExecuteResponse {
         let mutation = """
         mutation executeCacBusinessChecks($input: ExecuteCacBusinessChecksInput!) {
           executeCacBusinessChecks(input: $input) {
@@ -68,9 +72,10 @@ final class CacAPI {
         }
         """
         var input: [String: Any] = [
-            "processToken": processToken,
-            "selectedBusinessId": businessId,
-            "checks": checks,
+            "processToken":     processToken,
+            "companyId":        companyId,
+            "selectedBusiness": selectedBusiness,
+            "checks":           checks,
         ]
         if let providerId { input["providerId"] = providerId }
         if let levelSlug  { input["levelSlug"]  = levelSlug }

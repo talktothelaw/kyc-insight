@@ -14,6 +14,9 @@ import Foundation
 public enum ConsentType: String, Sendable {
     case nin_consent, bvn_consent, name_consent
     case drivers_license_consent, passport_consent
+    // Internal-mode CAC business consent. Backend wires this to mono.cac
+    // with `submitConsentIdentifier`; same OTP flow as DL/Passport.
+    case cac_consent
 }
 
 public struct ConsentWidgetConfig: Decodable, Sendable {
@@ -68,6 +71,12 @@ public struct SubmitConsentIdentifierResponse: Decodable, Sendable {
     public let phoneHint: String?
     public let otpSentAt: String?
     public let code: String?
+}
+
+public struct AcceptConsentDisclosureResponse: Decodable, Sendable {
+    public let success: Bool
+    public let error: Bool
+    public let message: String?
 }
 
 public struct VerifyConsentIdentifierOtpResponse: Decodable, Sendable {
@@ -138,10 +147,41 @@ public final class ConsentAPI {
         )
     }
 
-    public func submitConsentIdentifier(
-        processToken: String,
+    /// Records the disclosure-accept step required by the backend before
+    /// `submitConsentIdentifier` will send the OTP. 1:1 with the web's
+    /// `acceptConsentDisclosure` in `services/consentApi.ts:299` — the
+    /// internal-mode flow gates the OTP send on this row existing.
+    public func acceptConsentDisclosure(
         consentAcceptanceId: String,
-        sessionId: String,
+        scopeId: String,
+        userAgent: String?
+    ) async throws -> AcceptConsentDisclosureResponse {
+        let mutation = """
+        mutation acceptConsentDisclosure($input: AcceptConsentDisclosureInput!) {
+          acceptConsentDisclosure(input: $input) {
+            success error message
+          }
+        }
+        """
+        var input: [String: Any] = [
+            "consentAcceptanceId": consentAcceptanceId,
+            "scopeId":             scopeId,
+        ]
+        if let userAgent { input["userAgent"] = userAgent }
+        return try await client.execute(
+            query: mutation, variables: ["input": input],
+            rootField: "acceptConsentDisclosure",
+            as: AcceptConsentDisclosureResponse.self
+        )
+    }
+
+    // Internal-mode inputs the backend accepts: { consentAcceptanceId,
+    // phoneNumber?, identifier } / { consentAcceptanceId, otpCode } /
+    // { consentAcceptanceId }. Sending extra fields like processToken or
+    // sessionId is a hard GraphQL validation failure.
+    public func submitConsentIdentifier(
+        consentAcceptanceId: String,
+        phoneNumber: String?,
         identifier: [String: String]
     ) async throws -> SubmitConsentIdentifierResponse {
         let mutation = """
@@ -151,12 +191,11 @@ public final class ConsentAPI {
           }
         }
         """
-        let input: [String: Any] = [
-            "processToken":        processToken,
+        var input: [String: Any] = [
             "consentAcceptanceId": consentAcceptanceId,
-            "sessionId":           sessionId,
             "identifier":          identifier,
         ]
+        if let phoneNumber { input["phoneNumber"] = phoneNumber }
         return try await client.execute(
             query: mutation, variables: ["input": input],
             rootField: "submitConsentIdentifier",
@@ -165,9 +204,7 @@ public final class ConsentAPI {
     }
 
     public func verifyConsentIdentifierOtp(
-        processToken: String,
         consentAcceptanceId: String,
-        sessionId: String,
         otpCode: String
     ) async throws -> VerifyConsentIdentifierOtpResponse {
         let mutation = """
@@ -178,9 +215,7 @@ public final class ConsentAPI {
         }
         """
         let input: [String: Any] = [
-            "processToken":        processToken,
             "consentAcceptanceId": consentAcceptanceId,
-            "sessionId":           sessionId,
             "otpCode":             otpCode,
         ]
         return try await client.execute(
@@ -191,9 +226,7 @@ public final class ConsentAPI {
     }
 
     public func resendConsentIdentifierOtp(
-        processToken: String,
-        consentAcceptanceId: String,
-        sessionId: String
+        consentAcceptanceId: String
     ) async throws -> ResendConsentOtpResponse {
         let mutation = """
         mutation resendConsentIdentifierOtp($input: ResendConsentOtpInput!) {
@@ -203,9 +236,7 @@ public final class ConsentAPI {
         }
         """
         let input: [String: Any] = [
-            "processToken":        processToken,
             "consentAcceptanceId": consentAcceptanceId,
-            "sessionId":           sessionId,
         ]
         return try await client.execute(
             query: mutation, variables: ["input": input],

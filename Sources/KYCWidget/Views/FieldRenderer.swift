@@ -28,10 +28,10 @@ struct FieldRenderer: View {
         case .image:    CameraFieldView(field: field, session: session, preferFrontCamera: false)
         case .liveness: LivenessFieldView(field: field, session: session)
 
-        // NIN / DL / Passport use the V2 initConsent mutation with mode
-        // branching (internal OTP vs external WKWebView) + polling. 1:1
-        // with the web's NinConsentField.tsx.
-        case .ninConsent, .driversLicenseConsent, .passportConsent:
+        // NIN / DL / Passport / CAC use the V2 initConsent mutation with
+        // mode branching (internal OTP vs external WKWebView) + polling.
+        // 1:1 with the web's NinConsentField.tsx / InternalConsentField.tsx.
+        case .ninConsent, .driversLicenseConsent, .passportConsent, .cacConsent:
             ConsentFieldView(field: field, session: session)
         // BVN uses RequestBVNVerificationFlow → NIBSS-hosted page in
         // WebConsentSheet → getBvnStatus polling. Mirrors the web's

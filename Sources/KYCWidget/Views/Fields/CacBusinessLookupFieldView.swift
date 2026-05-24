@@ -144,11 +144,19 @@ struct CacBusinessLookupFieldView: View {
         phase = .executing
         let api = CacAPI(client: GraphQLClient(endpoint: session.config.gqlEndpoint, publicKey: session.config.publicKey))
         do {
+            var businessSnapshot: [String: Any] = ["id": match.id]
+            if let name = match.name             { businessSnapshot["name"] = name }
+            if let rc = match.rcNumber           { businessSnapshot["rcNumber"] = rc }
+            if let addr = match.address          { businessSnapshot["address"] = addr }
+            if let type = match.type             { businessSnapshot["type"] = type }
+            if let status = match.status         { businessSnapshot["status"] = status }
+            if let reg = match.registrationDate  { businessSnapshot["registrationDate"] = reg }
             let res = try await api.executeChecks(
                 processToken: session.schema?.processToken ?? "",
                 providerId: session.currentSection?.providerId,
                 levelSlug: session.currentStep?.slug,
-                businessId: match.id,
+                companyId: match.id,
+                selectedBusiness: businessSnapshot,
                 checks: allChecks
             )
             if let kycSubmissionId = res.kycSubmissionId, res.success {

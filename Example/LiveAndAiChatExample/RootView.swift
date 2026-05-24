@@ -28,8 +28,44 @@ struct RootView: View {
     /// device needs the host's LAN IP (e.g. `http://192.168.1.42:3000`).
     @State private var gqlEndpoint = "https://kyc-api.netapps.ng/graphql"
 
-    @State private var log: [String] = []
+    @State private var log: [EventLogEntry] = []
     @State private var widget: KYCWidget?
+
+    /// One row in the Event Log. The `kind` drives the badge colour +
+    /// label so each lifecycle event is scannable at a glance.
+    struct EventLogEntry: Identifiable {
+        let id = UUID()
+        let timestamp: Date
+        let kind: EventKind
+        let detail: String
+    }
+    enum EventKind: String {
+        case info, ready, levelChange, levelApproved, submit, success, error, close
+        var label: String {
+            switch self {
+            case .info:          return "INFO"
+            case .ready:         return "READY"
+            case .levelChange:   return "LEVEL CHANGE"
+            case .levelApproved: return "LEVEL APPROVED"
+            case .submit:        return "SUBMIT"
+            case .success:       return "SUCCESS"
+            case .error:         return "ERROR"
+            case .close:         return "CLOSE"
+            }
+        }
+        var color: Color {
+            switch self {
+            case .info:          return .secondary
+            case .ready:         return .blue
+            case .levelChange:   return .purple
+            case .levelApproved: return .green
+            case .submit:        return .orange
+            case .success:       return .green
+            case .error:         return .red
+            case .close:         return .gray
+            }
+        }
+    }
 
     var body: some View {
         NavigationView {
@@ -129,24 +165,28 @@ struct RootView: View {
                     .font(.system(size: 12, weight: .medium))
                     .disabled(log.isEmpty)
             }
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 2) {
-                    if log.isEmpty {
-                        Text("No events yet. Tap “Start verification”.")
-                            .font(.system(size: 11))
-                            .foregroundColor(.secondary)
-                            .padding(.vertical, 6)
-                    } else {
-                        ForEach(Array(log.enumerated()), id: \.offset) { _, line in
-                            Text(line)
-                                .font(.system(size: 11, design: .monospaced))
-                                .foregroundColor(.primary)
-                                .frame(maxWidth: .infinity, alignment: .leading)
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 4) {
+                        if log.isEmpty {
+                            Text("No events yet. Tap “Start verification”.")
+                                .font(.system(size: 11))
+                                .foregroundColor(.secondary)
+                                .padding(.vertical, 6)
+                        } else {
+                            ForEach(log) { entry in
+                                eventRow(entry).id(entry.id)
+                            }
                         }
                     }
                 }
+                .onChange(of: log.count) { _ in
+                    // Auto-scroll to the latest event so you don't
+                    // have to drag to find it during a live run.
+                    if let last = log.last { withAnimation { proxy.scrollTo(last.id, anchor: .bottom) } }
+                }
             }
-            .frame(minHeight: 160, maxHeight: 240)
+            .frame(minHeight: 200, maxHeight: 320)
             .padding(8)
             .background(Color(.systemBackground))
             .cornerRadius(8)
@@ -161,7 +201,7 @@ struct RootView: View {
     private func startVerification() {
         let trimmedEndpoint = gqlEndpoint.trimmingCharacters(in: .whitespacesAndNewlines)
         let endpoint = URL(string: trimmedEndpoint) ?? KYCWidgetConfig.defaultGQLEndpoint
-        appendLog("ENDPOINT \(endpoint.absoluteString)")
+        appendLog(.info, "Endpoint → \(endpoint.absoluteString)")
         let config = KYCWidgetConfig(
             publicKey: publicKey.trimmingCharacters(in: .whitespacesAndNewlines),
             userRef:   userRef.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -175,28 +215,76 @@ struct RootView: View {
         )
 
         let w = KYCWidget(config: config)
-        w.onReady          = { appendLog("READY") }
-        w.onLevelChange    = { (lvl: KYCWidgetLevel) in appendLog("LEVEL CHANGE  \(lvl.slug) [\(lvl.index)]") }
-        w.onLevelApproved  = { (lvl: KYCWidgetLevel) in appendLog("LEVEL APPROVED \(lvl.slug) [\(lvl.index)]") }
-        w.onSubmit         = { _ in appendLog("SUBMIT") }
-        w.onSuccess        = { _ in appendLog("SUCCESS") }
-        w.onError          = { (err: KYCWidgetError) in appendLog("ERROR  \(err.localizedDescription)") }
-        w.onClose          = {
-            appendLog("CLOSE")
+        // EVERY public callback the KYCWidget exposes — wired here so
+        // the Event Log shows you exactly when each fires in real time.
+        // Payloads are surfaced where they exist (section name for
+        // SUBMIT, level slug + index for LEVEL CHANGE / LEVEL APPROVED,
+        // typed error description for ERROR) so you can see what's
+        // happening without attaching a debugger.
+        w.onReady = {
+            appendLog(.ready, "Widget loaded — schema fetched, cursor placed")
+        }
+        w.onLevelChange = { (lvl: KYCWidgetLevel) in
+            appendLog(.levelChange, "→ \(lvl.slug) (index \(lvl.index))")
+        }
+        w.onLevelApproved = { (lvl: KYCWidgetLevel) in
+            appendLog(.levelApproved, "✓ \(lvl.slug) (index \(lvl.index)) — every section approved")
+        }
+        w.onSubmit = { (payload: Any?) in
+            let sectionName = (payload as? WidgetSection)?.name ?? "(unknown section)"
+            appendLog(.submit, "Section ‘\(sectionName)’ submitted")
+        }
+        w.onSuccess = { _ in
+            appendLog(.success, "All tiers complete — verification submitted")
+        }
+        w.onError = { (err: KYCWidgetError) in
+            appendLog(.error, err.localizedDescription)
+        }
+        w.onClose = {
+            appendLog(.close, "User dismissed the widget")
             widget = nil
         }
         widget = w
 
         guard let presenter = topPresentedViewController() else {
-            appendLog("ERROR  no presenter")
+            appendLog(.error, "No presenter view controller found — can't present widget")
             return
         }
         w.present(from: presenter)
     }
 
-    private func appendLog(_ line: String) {
-        let ts = Self.timeFormatter.string(from: Date())
-        log.append("\(ts) \(line)")
+    /// Coloured-badge row for one event. The badge label + colour
+    /// makes lifecycle events scannable without reading every line.
+    @ViewBuilder
+    private func eventRow(_ entry: EventLogEntry) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Text(Self.timeFormatter.string(from: entry.timestamp))
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundColor(.secondary)
+                .frame(width: 64, alignment: .leading)
+            Text(entry.kind.label)
+                .font(.system(size: 9, weight: .bold))
+                .tracking(0.3)
+                .foregroundColor(entry.kind.color)
+                .padding(.horizontal, 5)
+                .padding(.vertical, 2)
+                .background(entry.kind.color.opacity(0.12))
+                .clipShape(RoundedRectangle(cornerRadius: 3))
+                .frame(width: 96, alignment: .leading)
+            Text(entry.detail)
+                .font(.system(size: 11))
+                .foregroundColor(.primary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    /// New tagged-append API — every callsite passes the event kind so
+    /// the row renders with the right badge colour. The legacy bare
+    /// string `appendLog(_ line:)` is gone; everything goes through
+    /// this typed entry-point.
+    private func appendLog(_ kind: EventKind, _ detail: String) {
+        log.append(EventLogEntry(timestamp: Date(), kind: kind, detail: detail))
         if log.count > 500 { log.removeFirst(log.count - 500) }
     }
 
