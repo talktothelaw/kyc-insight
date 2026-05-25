@@ -198,7 +198,20 @@ enum SchemaNormalizer {
     // MARK: - Provider fields (with consent / package synthesis)
 
     static func normalizeProviderFields(provider: RawProvider) -> [WidgetField] {
-        let fields = provider.fields.map { normalizeField($0, provider: provider) }
+        var fields = provider.fields.map { normalizeField($0, provider: provider) }
+
+        // Liveness providers (`liveness_check`, `face_match_nin`) declare TWO
+        // fields server-side — `selfieImage` (the capture entry, kind=.liveness)
+        // and `liveliness_images` (the per-challenge frame array). The
+        // LivenessField produces BOTH values from a single capture flow, so
+        // the second field should never render its own input. Drop it here so
+        // the section shows exactly one entry; BuildSubmission still packs
+        // both kycPayload entries from the LivenessValue. Mirrors the web fix
+        // at kyc-web-wiget-v2/src/engine/normalize.ts.
+        let livenessProviders: Set<String> = ["liveness_check", "face_match_nin"]
+        if livenessProviders.contains(provider.type) && fields.contains(where: { $0.kind == .liveness }) {
+            fields = fields.filter { $0.name != "liveliness_images" }
+        }
 
         // Empty-fields synthesis — providers that ship zero fields but the
         // widget is meant to render a packaged flow (NIN consent, DL consent,

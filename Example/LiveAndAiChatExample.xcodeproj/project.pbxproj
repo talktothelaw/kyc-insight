@@ -3,7 +3,7 @@
 	archiveVersion = 1;
 	classes = {
 	};
-	objectVersion = 56;
+	objectVersion = 60;
 	objects = {
 
 /* Begin PBXBuildFile section */
@@ -14,10 +14,10 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
-		AA01000A0000000A /* LiveAndAiChatExample.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = LiveAndAiChatExample.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		AA01000200000002 /* LiveAndAiChatExampleApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveAndAiChatExampleApp.swift; sourceTree = "<group>"; };
 		AA01000400000004 /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
 		AA01000600000006 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		AA01000A0000000A /* LiveAndAiChatExample.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = LiveAndAiChatExample.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		AA01000B0000000B /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -41,14 +41,6 @@
 			);
 			sourceTree = "<group>";
 		};
-		AA01001200000012 /* Products */ = {
-			isa = PBXGroup;
-			children = (
-				AA01000A0000000A /* LiveAndAiChatExample.app */,
-			);
-			name = Products;
-			sourceTree = "<group>";
-		};
 		AA01001100000011 /* LiveAndAiChatExample */ = {
 			isa = PBXGroup;
 			children = (
@@ -58,6 +50,14 @@
 				AA01000B0000000B /* Info.plist */,
 			);
 			path = LiveAndAiChatExample;
+			sourceTree = "<group>";
+		};
+		AA01001200000012 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				AA01000A0000000A /* LiveAndAiChatExample.app */,
+			);
+			name = Products;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -262,7 +262,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = "";
+				DEVELOPMENT_TEAM = CY49595DZ7;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = LiveAndAiChatExample/Info.plist;
@@ -292,7 +292,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = "";
+				DEVELOPMENT_TEAM = CY49595DZ7;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = LiveAndAiChatExample/Info.plist;
@@ -318,20 +318,20 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
-		AA01001D0000001D /* Build configuration list for PBXProject "LiveAndAiChatExample" */ = {
-			isa = XCConfigurationList;
-			buildConfigurations = (
-				AA01002100000021 /* Debug */,
-				AA01002200000022 /* Release */,
-			);
-			defaultConfigurationIsVisible = 0;
-			defaultConfigurationName = Release;
-		};
 		AA01001700000017 /* Build configuration list for PBXNativeTarget "LiveAndAiChatExample" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				AA01002300000023 /* Debug */,
 				AA01002400000024 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		AA01001D0000001D /* Build configuration list for PBXProject "LiveAndAiChatExample" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				AA01002100000021 /* Debug */,
+				AA01002200000022 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

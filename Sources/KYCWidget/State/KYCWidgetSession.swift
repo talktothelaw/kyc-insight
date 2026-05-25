@@ -50,6 +50,30 @@ public final class KYCWidgetSession: ObservableObject {
         self.client = GraphQLClient(endpoint: config.gqlEndpoint, publicKey: config.publicKey)
     }
 
+    /// Build a LivenessAPI bound to this session's GraphQL client + auth.
+    /// LivenessFieldView calls this once on appear; the API instance is
+    /// stateless beyond holding the client reference.
+    public func makeLivenessAPI() -> LivenessAPI {
+        return LivenessAPI(client: client)
+    }
+
+    /// Bridge `onLivenessSubmitted` from the LivenessField up to the host
+    /// app's callback. Fires the moment the backend evaluator returns a
+    /// verdict — BEFORE the level-level `onLevelApproved` event.
+    public func dispatchLivenessSubmitted(
+        sessionToken: String,
+        status: String,
+        riskScore: Double?,
+        failureReason: String?
+    ) {
+        widget?.dispatchLivenessSubmitted(KYCLivenessVerdict(
+            sessionToken: sessionToken,
+            status: status,
+            riskScore: riskScore,
+            failureReason: failureReason
+        ))
+    }
+
     deinit {
         // Drop any shared loaders keyed against this session so a freshly
         // presented widget doesn't accidentally see another session's

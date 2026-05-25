@@ -23,7 +23,7 @@ final class SchemaNormalizerTests: XCTestCase {
     private func mkField(name: String = "x", title: String = "X", inputType: String,
                          options: [AnyCodable]? = nil, required: Bool? = nil) -> RawField {
         RawField(_id: "f1", name: name, title: title, inputType: inputType,
-                 options: options, required: required)
+                 options: options, required: required, alreadySupplied: nil)
     }
 
     private func mkProvider(type: String = "p_default", fields: [RawField] = []) -> RawProvider {

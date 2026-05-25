@@ -21,6 +21,10 @@ public final class KYCWidget {
     public var onSuccess: ((Any?) -> Void)?
     public var onError: ((KYCWidgetError) -> Void)?
     public var onClose: (() -> Void)?
+    /// Fires the moment the backend has evaluated a liveness session and
+    /// returned a verdict — BEFORE the parent `onLevelApproved`. Mirrors
+    /// the web SDK's `onLivenessSubmitted` callback.
+    public var onLivenessSubmitted: ((KYCLivenessVerdict) -> Void)?
 
     // MARK: - State
 
@@ -100,4 +104,21 @@ public final class KYCWidget {
     func dispatchSubmit(payload: Any?) { onSubmit?(payload) }
     func dispatchSuccess() { onSuccess?(nil) }
     func dispatchError(_ err: KYCWidgetError) { onError?(err) }
+    func dispatchLivenessSubmitted(_ verdict: KYCLivenessVerdict) { onLivenessSubmitted?(verdict) }
+}
+
+/// Verdict the backend returns from `submitLivenessEvidence`. Same shape
+/// as the web SDK's `onLivenessSubmitted` payload.
+public struct KYCLivenessVerdict: Equatable, Sendable {
+    public let sessionToken: String
+    public let status: String   // 'passed' | 'failed' | 'requires_manual_review' | 'expired' | 'submitted'
+    public let riskScore: Double?
+    public let failureReason: String?
+
+    public init(sessionToken: String, status: String, riskScore: Double?, failureReason: String?) {
+        self.sessionToken = sessionToken
+        self.status = status
+        self.riskScore = riskScore
+        self.failureReason = failureReason
+    }
 }
