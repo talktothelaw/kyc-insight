@@ -151,6 +151,17 @@ public final class KYCWidgetSession: ObservableObject {
             let resume = findResumePosition(schema)
             self.currentStepIndex = resume.step
             self.currentSectionIndex = resume.section
+            // Pre-flight: surface a friendly error if the schema needs a
+            // direct-flow provider the business isn't unlocked for. Mirrors
+            // the web's `runConsentModePreflight` in widgetStore.ts. Network
+            // failure is non-fatal — the backend's
+            // `enforceDirectVerificationGate` is the authoritative refusal.
+            if let preflightError = await runConsentModePreflight(schema: schema) {
+                self.loadError = preflightError
+                self.phase = .error
+                widget?.dispatchError(.loadFailed(message: preflightError))
+                return
+            }
             self.phase = .ready
             // Diff the new schema against tracked approvals so newly-
             // approved levels fire `onLevelApproved` even when the
@@ -171,6 +182,62 @@ public final class KYCWidgetSession: ObservableObject {
             self.phase = .error
             widget?.dispatchError(.loadFailed(message: self.loadError ?? "Unknown error"))
         }
+    }
+
+    // Fallback used only when the backend doesn't return
+    // `directProviderCounterparts` on `getMyConsentMode` (older deployments).
+    // The server is the source of truth — adding/removing entries on the
+    // backend propagates without an SDK release.
+    private static let fallbackDirectToConsent: [String: String] = [
+        "nin": "nin_consent",
+        "driving_license": "drivers_license_consent",
+        "international_passport": "passport_consent",
+    ]
+
+    // Detect a schema that mixes direct-flow providers with a business that
+    // hasn't been granted direct-verification access. Returns the friendly
+    // error to surface, or nil when everything is fine. Network failures
+    // return nil and let the backend gate be the authoritative refusal.
+    private func runConsentModePreflight(schema: WidgetSchema) async -> String? {
+        var requestedTypes = Set<String>()
+        for step in schema.steps {
+            for section in step.sections {
+                requestedTypes.insert(section.providerType)
+            }
+        }
+
+        let mode: ConsentModeResponse
+        do {
+            mode = try await ConsentAPI(client: client).getMyConsentMode()
+        } catch {
+            return nil
+        }
+
+        let counterparts: [String: String]
+        if let serverList = mode.directProviderCounterparts, !serverList.isEmpty {
+            counterparts = Dictionary(uniqueKeysWithValues: serverList.map { ($0.directType, $0.consentType) })
+        } else {
+            counterparts = Self.fallbackDirectToConsent
+        }
+
+        let directInSchema = requestedTypes.filter { counterparts[$0] != nil }
+        if directInSchema.isEmpty { return nil }
+
+        let blocked = directInSchema.filter { directType in
+            guard let counterpart = counterparts[directType] else { return false }
+            if !mode.allowDirectVerification { return true }
+            return !mode.directVerificationAllowedTypes.contains(counterpart)
+        }
+        if blocked.isEmpty { return nil }
+
+        let items = blocked
+            .sorted()
+            .map { "\($0) (try \(counterparts[$0] ?? "consent"))" }
+            .joined(separator: ", ")
+        return "This verification cannot start because the following direct-mode providers " +
+            "are not enabled for this business: \(items). " +
+            "Ask the merchant to switch to the consent counterparts, or contact support to " +
+            "enable direct verification."
     }
 
     /// Seed widget values from each section's `submittedValues` so rejected
@@ -288,6 +355,33 @@ public final class KYCWidgetSession: ObservableObject {
                 KYCWidgetLevel(slug: step.slug, index: currentStepIndex)
             )
         }
+    }
+
+    // Counterpart to goBack — used by the read-only footer's Next button so
+    // a user who has stepped back into an approved section can walk forward
+    // one section at a time instead of jumping straight to the frontier.
+    public func goForward() {
+        guard let step = currentStep, let schema else { return }
+        if currentSectionIndex < step.sections.count - 1 {
+            currentSectionIndex += 1
+            return
+        }
+        guard currentStepIndex < schema.steps.count - 1 else { return }
+        currentStepIndex += 1
+        currentSectionIndex = 0
+        if let s = currentStep {
+            widget?.dispatchLevelChange(
+                KYCWidgetLevel(slug: s.slug, index: currentStepIndex)
+            )
+        }
+    }
+
+    /// True when there's somewhere ahead of the current cursor — either a
+    /// later section in the current step, or a later step at all.
+    public var canGoForward: Bool {
+        guard let step = currentStep, let schema else { return false }
+        if currentSectionIndex < step.sections.count - 1 { return true }
+        return currentStepIndex < schema.steps.count - 1
     }
 
     // MARK: - Field values

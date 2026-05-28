@@ -21,10 +21,12 @@ struct CacBusinessLookupFieldView: View {
     @State private var matches: [CacBusinessMatch] = []
     @State private var picked: CacBusinessMatch?
     @State private var statusMessage: String?
+    // Sub-checks the super-admin currently has enabled. nil = haven't
+    // fetched yet → fall back to the full list (graceful degradation).
+    @State private var enabledChecks: [String]?
 
-    /// Always-on checks the example demos. In real production these come
-    /// from `extras` on the field; the simulator demo just runs the basic set.
-    private let allChecks = ["directors", "shareholders", "secretary", "psc", "status_report"]
+    private static let defaultChecks = ["directors", "shareholders", "secretary", "psc", "status_report"]
+    private var activeChecks: [String] { enabledChecks ?? Self.defaultChecks }
 
     enum Phase: Equatable { case search, searching, pickingBusiness, executing, done, failed }
 
@@ -65,6 +67,22 @@ struct CacBusinessLookupFieldView: View {
                 default: EmptyView()
                 }
             }
+        }
+        .task { await loadEnabledChecks() }
+    }
+
+    private func loadEnabledChecks() async {
+        guard enabledChecks == nil else { return }
+        let api = CacAPI(client: GraphQLClient(endpoint: session.config.gqlEndpoint, publicKey: session.config.publicKey))
+        do {
+            let res = try await api.getEnabledChecks()
+            if let rows = res.checks {
+                enabledChecks = rows.filter { $0.enabled }.map { $0.key }
+            }
+        } catch {
+            // Soft-fail: keep the default set so a network blip doesn't
+            // block the picker. Backend still filters disabled checks on
+            // execute as the authoritative gate.
         }
     }
 
@@ -110,7 +128,7 @@ struct CacBusinessLookupFieldView: View {
             if let rc = picked.rcNumber {
                 Text("RC \(rc)").font(.system(size: 12)).foregroundColor(.secondary)
             }
-            Text("\(allChecks.count) CAC check\(allChecks.count == 1 ? "" : "s") executed")
+            Text("\(activeChecks.count) CAC check\(activeChecks.count == 1 ? "" : "s") executed")
                 .font(.system(size: 11)).foregroundColor(.secondary)
         }
         .padding(12)
@@ -157,7 +175,7 @@ struct CacBusinessLookupFieldView: View {
                 levelSlug: session.currentStep?.slug,
                 companyId: match.id,
                 selectedBusiness: businessSnapshot,
-                checks: allChecks
+                checks: activeChecks
             )
             if let kycSubmissionId = res.kycSubmissionId, res.success {
                 phase = .done
@@ -169,7 +187,7 @@ struct CacBusinessLookupFieldView: View {
                         "name":     .string(match.name ?? ""),
                         "rcNumber": .string(match.rcNumber ?? ""),
                     ]),
-                    "executedChecks":   .array(allChecks.map { .string($0) }),
+                    "executedChecks":   .array(activeChecks.map { .string($0) }),
                 ]), for: field.id)
             } else {
                 phase = .failed

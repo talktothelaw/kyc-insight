@@ -38,6 +38,11 @@ struct LivenessCaptureSheetV2: View {
                 VStack(spacing: 0) {
                     topBar
                     progressBar
+                    // Persistent target-zone label — sits between the
+                    // progress bar and the oval so the user always sees
+                    // where to put their face.
+                    targetZoneLabel
+                        .padding(.top, 16)
                     Spacer()
                     instructionBadge
                     qualityHints
@@ -123,12 +128,17 @@ struct LivenessCaptureSheetV2: View {
         GeometryReader { geo in
             let w = geo.size.width
             let h = geo.size.height
-            let rx = w * 0.34
+            let rx = w * 0.36
             let ry = h * 0.30
             let centerX = w / 2
-            let centerY = h * 0.45
+            let centerY = h * 0.44
+            let armLen = min(rx, ry) * 0.28
+            let acquired = coordinator.faceDetected && coordinator.faceCentered
+            let ringColor: Color = acquired ? .green : .white
+            let cornerColor: Color = acquired ? .green : Color(red: 0.99, green: 0.83, blue: 0.30)
             ZStack {
-                // Dim the outside via even-odd fill.
+                // Dim the outside via even-odd fill — heavier dim so the
+                // cut-out reads as a clear target zone.
                 Path { p in
                     p.addRect(CGRect(x: 0, y: 0, width: w, height: h))
                     p.addEllipse(in: CGRect(
@@ -136,24 +146,77 @@ struct LivenessCaptureSheetV2: View {
                         width: rx * 2, height: ry * 2
                     ))
                 }
-                .fill(Color.black.opacity(0.45), style: FillStyle(eoFill: true))
+                .fill(Color.black.opacity(0.65), style: FillStyle(eoFill: true))
 
-                // The guide ring itself.
+                // The guide ring — thicker so it reads at a glance.
                 Ellipse()
                     .strokeBorder(
-                        coordinator.faceDetected && coordinator.faceCentered
-                            ? Color.green
-                            : Color.white,
+                        ringColor,
                         style: StrokeStyle(
-                            lineWidth: 3,
-                            dash: coordinator.stage.isActiveChallenge ? [] : [10, 6]
+                            lineWidth: 4,
+                            dash: coordinator.stage.isActiveChallenge ? [] : [12, 7]
                         )
                     )
                     .frame(width: rx * 2, height: ry * 2)
                     .position(x: centerX, y: centerY)
-                    .animation(.easeInOut(duration: 0.2), value: coordinator.faceCentered)
+                    .animation(.easeInOut(duration: 0.2), value: acquired)
+
+                // Scan-style L-shaped corner brackets at the oval's
+                // bounding rect — gives the user an explicit "viewfinder
+                // box" so the centring intent is obvious.
+                Path { p in
+                    let left = centerX - rx
+                    let right = centerX + rx
+                    let top = centerY - ry
+                    let bot = centerY + ry
+                    // top-left
+                    p.move(to: CGPoint(x: left, y: top))
+                    p.addLine(to: CGPoint(x: left + armLen, y: top))
+                    p.move(to: CGPoint(x: left, y: top))
+                    p.addLine(to: CGPoint(x: left, y: top + armLen))
+                    // top-right
+                    p.move(to: CGPoint(x: right, y: top))
+                    p.addLine(to: CGPoint(x: right - armLen, y: top))
+                    p.move(to: CGPoint(x: right, y: top))
+                    p.addLine(to: CGPoint(x: right, y: top + armLen))
+                    // bottom-left
+                    p.move(to: CGPoint(x: left, y: bot))
+                    p.addLine(to: CGPoint(x: left + armLen, y: bot))
+                    p.move(to: CGPoint(x: left, y: bot))
+                    p.addLine(to: CGPoint(x: left, y: bot - armLen))
+                    // bottom-right
+                    p.move(to: CGPoint(x: right, y: bot))
+                    p.addLine(to: CGPoint(x: right - armLen, y: bot))
+                    p.move(to: CGPoint(x: right, y: bot))
+                    p.addLine(to: CGPoint(x: right, y: bot - armLen))
+                }
+                .stroke(cornerColor, style: StrokeStyle(lineWidth: 4, lineCap: .round))
+                .animation(.easeInOut(duration: 0.2), value: acquired)
             }
         }
+    }
+
+    // Persistent label sitting between the top bar and the oval's top
+    // edge so the user always knows the oval is the target zone — even
+    // before the detector has acquired a centred face. Goes amber-on-dark
+    // until centring is confirmed, then flips to green.
+    private var targetZoneLabel: some View {
+        let acquired = coordinator.faceDetected && coordinator.faceCentered
+        let text: String = {
+            if !coordinator.faceDetected { return "Position your face inside the frame" }
+            if !coordinator.faceCentered { return "Centre your face in the oval" }
+            switch coordinator.stage {
+            case .detecting: return "Hold still…"
+            default:         return "Stay centred"
+            }
+        }()
+        return Text(text)
+            .font(.system(size: 13, weight: .semibold))
+            .foregroundColor(.white)
+            .padding(.horizontal, 14).padding(.vertical, 8)
+            .background((acquired ? Color(red: 0.02, green: 0.59, blue: 0.41) : Color.black).opacity(0.85))
+            .clipShape(Capsule())
+            .animation(.easeInOut(duration: 0.2), value: acquired)
     }
 
     @ViewBuilder

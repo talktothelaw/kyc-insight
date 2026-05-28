@@ -314,9 +314,25 @@ struct KYCWidgetView: View {
                 .controlSize(.large)
                 .disabled(session.currentStepIndex == 0 && session.currentSectionIndex == 0)
                 Spacer()
-                // Read-only sections hide the Continue button entirely — there's
-                // nothing to submit. Matches WidgetRoot.tsx's footer branching.
-                if !session.isCurrentSectionReadOnly {
+                // Read-only sections swap Continue for Next — there's nothing to
+                // submit, but the user should still be able to walk forward
+                // through approved sections one step at a time without jumping
+                // to the frontier via the inline panel CTA.
+                if session.isCurrentSectionReadOnly {
+                    if session.canGoForward {
+                        Button {
+                            session.goForward()
+                        } label: {
+                            HStack(spacing: 4) {
+                                Text("Next").font(.system(size: 15, weight: .semibold))
+                                Image(systemName: "chevron.right").font(.system(size: 12, weight: .semibold))
+                            }
+                            .frame(minWidth: 100)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.large)
+                    }
+                } else {
                     Button {
                         Task { await session.submitCurrentSection() }
                     } label: {

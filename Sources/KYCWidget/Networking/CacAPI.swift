@@ -34,6 +34,18 @@ public struct CacExecuteResponse: Decodable, Sendable {
     public let results: [CacExecuteResultRow]?
 }
 
+public struct CacEnabledCheck: Decodable, Sendable, Hashable {
+    public let key: String
+    public let enabled: Bool
+}
+
+public struct CacEnabledChecksResponse: Decodable, Sendable {
+    public let success: Bool
+    public let error: Bool
+    public let message: String?
+    public let checks: [CacEnabledCheck]?
+}
+
 @MainActor
 final class CacAPI {
     private let client: GraphQLClient
@@ -83,6 +95,25 @@ final class CacAPI {
             query: mutation, variables: ["input": input],
             rootField: "executeCacBusinessChecks",
             as: CacExecuteResponse.self
+        )
+    }
+
+    // Returns each CAC sub-check + whether its underlying provider is enabled
+    // by the super-admin. Used to hide rows the merchant has disabled (e.g.
+    // shareholders) before the customer can pick them.
+    func getEnabledChecks() async throws -> CacEnabledChecksResponse {
+        let query = """
+        query getCacEnabledChecks {
+          getCacEnabledChecks {
+            success error message
+            checks { key enabled }
+          }
+        }
+        """
+        return try await client.execute(
+            query: query, variables: [:],
+            rootField: "getCacEnabledChecks",
+            as: CacEnabledChecksResponse.self
         )
     }
 }

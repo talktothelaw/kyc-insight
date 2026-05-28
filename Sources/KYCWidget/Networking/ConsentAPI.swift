@@ -117,6 +117,25 @@ public struct FinalizeRequirementResponse: Decodable, Sendable {
     public let alreadyFinalized: Bool?
 }
 
+// Public-key gate from the backend's consent module. The widget pre-flights
+// this on session load to detect a schema that mixes direct-flow providers
+// with a business the super-admin hasn't unlocked for direct verification.
+//
+// `directProviderCounterparts` is the server-owned direct→consent mapping
+// (e.g. nin → nin_consent). The SDK reads it from this response instead of
+// hardcoding the list — adding a new entry on the backend propagates without
+// an SDK release.
+public struct DirectProviderCounterpart: Decodable, Sendable {
+    public let directType: String
+    public let consentType: String
+}
+
+public struct ConsentModeResponse: Decodable, Sendable {
+    public let allowDirectVerification: Bool
+    public let directVerificationAllowedTypes: [String]
+    public let directProviderCounterparts: [DirectProviderCounterpart]?
+}
+
 @MainActor
 public final class ConsentAPI {
     private let client: GraphQLClient
@@ -281,6 +300,27 @@ public final class ConsentAPI {
     /// consent result server-side; we use it to carry the section's
     /// kycPayload + optionalType so file/custom fields land alongside
     /// the consent reference. NO raw NIN/BVN should ever be in it.
+    // Read the authenticated business's direct-verification gate. Pure read,
+    // no billing. Used by the session preflight to fail fast with a clear
+    // message when the schema needs a provider the business isn't approved
+    // for — instead of letting the submission round-trip and surface a 403.
+    public func getMyConsentMode() async throws -> ConsentModeResponse {
+        let query = """
+        query getMyConsentMode {
+          getMyConsentMode {
+            allowDirectVerification
+            directVerificationAllowedTypes
+            directProviderCounterparts { directType consentType }
+          }
+        }
+        """
+        return try await client.execute(
+            query: query, variables: [:],
+            rootField: "getMyConsentMode",
+            as: ConsentModeResponse.self
+        )
+    }
+
     public func finalizeRequirement(
         processToken: String,
         consentAcceptanceId: String,
