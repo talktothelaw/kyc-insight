@@ -58,21 +58,19 @@ enum BuildSubmission {
             let raw = values[field.id]
             switch field.kind {
             case .sysSelect:
-                if let dict = raw?.dictValue,
-                   let selectedType = dict["selectedType"]?.stringValue {
-                    optionalType = selectedType
-                    if let subValues = dict["values"]?.dictValue {
-                        for (name, val) in subValues {
-                            if let consentDict = val.dictValue,
-                               let cid = consentDict["consentAcceptanceId"]?.stringValue {
-                                // Inner nin_consent — surface only the safe ref.
-                                consentAcceptanceId = cid
-                                consentReference = consentDict["consentReference"]?.stringValue
-                            } else {
-                                items.append(.init(field: name, value: stringify(val)))
-                            }
-                        }
-                    }
+                // sysSelect composite values may be NESTED — the leaf option
+                // the user picked can sit 2+ levels deep. flatten walks the
+                // chain, sets optionalType to the LEAF type, surfaces a leaf
+                // consent reference, and emits payload entries for every
+                // non-special value at every level.
+                let flat = SysSelectTraversal.flattenSysSelect(raw?.dictValue)
+                if let leaf = flat.leafType { optionalType = leaf }
+                if let cid = flat.consentAcceptanceId {
+                    consentAcceptanceId = cid
+                    if let ref = flat.consentReference { consentReference = ref }
+                }
+                for entry in flat.entries {
+                    items.append(.init(field: entry.name, value: stringify(entry.value)))
                 }
             case .ninConsent, .driversLicenseConsent, .passportConsent:
                 if let dict = raw?.dictValue,

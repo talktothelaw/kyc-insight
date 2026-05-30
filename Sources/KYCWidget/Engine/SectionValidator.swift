@@ -61,38 +61,31 @@ enum SectionValidator {
             return nil
 
         case .sysSelect:
+            // Walk to the LEAF composite (user may have picked an option 2+
+            // levels deep, e.g. corporate_policy_holder → cac_business_package).
+            // Validate the LEAF option's required fields against the leaf
+            // values dict — a one-level options.first(where:) would miss the
+            // nested leaf and silently skip all sub-field validation.
             let composite = value?.dictValue
-            let selectedType = composite?["selectedType"]?.stringValue ?? ""
-            if selectedType.isEmpty {
+            let (leafType, leafValues) = SysSelectTraversal.resolveLeaf(composite)
+            guard let leaf = leafType, !leaf.isEmpty else {
                 return field.required ? "\(field.label) is required." : nil
             }
-            // Recurse into the chosen sub-option's required sub-fields.
-            // Dispatch to each sub-field's own per-kind validator
-            // FIRST — that surfaces the actionable message
-            // ("Please complete NIN verification.", "Verify your
-            // BVN to continue.", etc.) instead of the generic
-            // "Please complete all fields…" wall. The per-kind
-            // validator already handles "value missing" for its own
-            // shape (ninConsent checks for consentAcceptanceId, bvn
-            // checks for the completion marker, etc.), so we don't
-            // need a separate isEmpty preamble. The generic message
-            // is kept only as a final fall-through for unknown sub-
-            // kinds that don't carry kind-specific shape rules.
-            guard let options = field.sysSelectOptions,
-                  let option = options.first(where: { $0.providerType == selectedType }) else {
+            guard let option = SysSelectTraversal.findSysSelectOptionByType(
+                field.sysSelectOptions, targetType: leaf
+            ) else {
                 return nil
             }
-            let subValues = composite?["values"]?.dictValue ?? [:]
+            let subValues = leafValues ?? [:]
             for sub in option.fields where sub.required {
                 let raw = subValues[sub.name]
+                // Dispatch to the sub-field's own per-kind validator FIRST —
+                // surfaces the actionable message ("Please complete NIN
+                // verification.", "Verify your BVN to continue.", etc.)
+                // instead of the generic "complete all fields" wall.
                 if let err = validate(field: sub, value: raw) {
                     return err
                 }
-                // Defensive fall-through: per-kind validator passed
-                // but the value is genuinely empty (sub-kind we don't
-                // have a specific check for). Surface a sub-field-
-                // aware message rather than the generic "complete all
-                // fields" wall.
                 if isEmpty(raw) {
                     return "\(sub.label) is required to continue."
                 }

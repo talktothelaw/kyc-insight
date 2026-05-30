@@ -462,19 +462,43 @@ public final class KYCWidgetSession: ObservableObject {
     /// call before every validate/submit.
     private func mirrorSysSelectSubValues(in section: WidgetSection) {
         for parent in section.fields where parent.kind == .sysSelect {
-            guard var composite = values[parent.id]?.dictValue,
-                  let selectedType = composite["selectedType"]?.stringValue,
-                  let options = parent.sysSelectOptions,
-                  let option = options.first(where: { $0.providerType == selectedType }) else { continue }
-            var subValues = composite["values"]?.dictValue ?? [:]
-            for sub in option.fields {
-                if let v = values[sub.id] {
-                    subValues[sub.name] = v
-                }
-            }
-            composite["values"] = .object(subValues)
-            values[parent.id] = .object(composite)
+            guard let composite = values[parent.id]?.dictValue else { continue }
+            // Recurse so a sysSelect sub-field's own composite gets mirrored
+            // BEFORE we snapshot it into the parent's values dict. Without
+            // recursion, the outer composite carries a stale inner composite
+            // and the leaf provider's sub-field values never reach the wire.
+            let mirrored = mirrorOneSysSelect(parent: parent, composite: composite)
+            values[parent.id] = .object(mirrored)
         }
+    }
+
+    /// Recursive worker for ``mirrorSysSelectSubValues(in:)``. For each
+    /// immediate sub-field of the selected option, copies its top-level value
+    /// into the composite's `values` dict. When a sub-field is itself a
+    /// sysSelect, its inner composite is mirrored first (depth-first) so the
+    /// nested values propagate end-to-end.
+    private func mirrorOneSysSelect(
+        parent: WidgetField,
+        composite: [String: AnyCodable]
+    ) -> [String: AnyCodable] {
+        var out = composite
+        guard let selectedType = composite["selectedType"]?.stringValue,
+              // Immediate-level lookup — each composite's selectedType is the
+              // user's choice at THAT level. The tree-walk happens via the
+              // recursion below, not via findSysSelectOptionByType here.
+              let options = parent.sysSelectOptions,
+              let option = options.first(where: { $0.providerType == selectedType }) else { return out }
+        var subValues = composite["values"]?.dictValue ?? [:]
+        for sub in option.fields {
+            let v = values[sub.id]
+            if sub.kind == .sysSelect, let innerDict = v?.dictValue {
+                subValues[sub.name] = .object(mirrorOneSysSelect(parent: sub, composite: innerDict))
+            } else if let v {
+                subValues[sub.name] = v
+            }
+        }
+        out["values"] = .object(subValues)
+        return out
     }
 
     // MARK: - Submit
@@ -602,11 +626,13 @@ public final class KYCWidgetSession: ObservableObject {
             return values[only.id]?.stringValue == "completed"
         }
         if only.kind == .sysSelect,
-           let composite = values[only.id]?.dictValue,
-           composite["selectedType"]?.stringValue == "bvn" {
-            let subValues = composite["values"]?.dictValue ?? [:]
-            // Any sub-value === "completed" satisfies — the BVN sub-field's
-            // single string value lives there after the mirror step.
+           let composite = values[only.id]?.dictValue {
+            // Walk to the LEAF composite — the user might have reached `bvn`
+            // through a wrapper sysSelect (e.g. identity_method → bvn). The
+            // old top-level selectedType check returned false for nested
+            // selections and we'd then mis-route to V1 submitKyc.
+            let (leafType, leafValues) = SysSelectTraversal.resolveLeaf(composite)
+            guard leafType == "bvn", let subValues = leafValues else { return false }
             return subValues.values.contains(where: { $0.stringValue == "completed" })
         }
         return false
