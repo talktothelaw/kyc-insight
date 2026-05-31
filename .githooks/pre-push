@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# pre-push hook — reject any tag push whose name doesn't match the
+# `s.version = "..."` declared in KYCWidget.podspec on the tagged commit.
+# CocoaPods Trunk fetches the source via the tag, then runs `pod spec lint`
+# server-side — a tag/podspec mismatch lints fine but a podspec/source
+# mismatch (or `pod trunk push` for a tag that doesn't exist on the GitHub
+# mirror) wastes a Trunk round-trip AND leaves a dangling tag on origin.
+# This guard catches both locally before the push leaves your machine.
+#
+# Activate once per clone:   git config core.hooksPath .githooks
+#
+# To cut a release, prefer:  scripts/release.sh <version>
+# (handles podspec bump + commit + tag + push atomically so this hook never
+# fires; CocoaPods Trunk publish remains a manual `pod trunk push` step.)
+
+set -euo pipefail
+
+while read -r local_ref local_sha _remote_ref _remote_sha; do
+    [[ "$local_ref" == refs/tags/* ]] || continue
+    tag="${local_ref#refs/tags/}"
+
+    # Read the podspec at the tagged commit (not HEAD — they may differ).
+    podspec_content="$(git show "${local_sha}:KYCWidget.podspec" 2>/dev/null || true)"
+    if [[ -z "$podspec_content" ]]; then
+        echo "pre-push: cannot read KYCWidget.podspec at ${local_sha}, aborting" >&2
+        exit 1
+    fi
+    podspec_version="$(printf '%s\n' "$podspec_content" \
+        | sed -nE 's/^[[:space:]]*s\.version[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' | head -n1)"
+
+    if [[ -z "$podspec_version" ]]; then
+        echo "pre-push: no 's.version = \"...\"' line in KYCWidget.podspec at ${local_sha}" >&2
+        exit 1
+    fi
+    if [[ "$podspec_version" != "$tag" ]]; then
+        cat >&2 <<EOF
+pre-push: refusing to push tag '${tag}' — KYCWidget.podspec on the
+tagged commit declares s.version '${podspec_version}'. The CocoaPods Trunk
+publish (\`pod trunk push KYCWidget.podspec\`) requires the tag to match the
+podspec exactly, otherwise the source clone-by-tag fails.
+
+Fix (deletes the stale tag, bumps podspec, re-tags, retries push):
+
+    git tag -d ${tag}
+    git push origin :refs/tags/${tag} || true
+    scripts/release.sh ${tag}
+
+Or, if you meant to release '${podspec_version}' instead:
+
+    git tag -d ${tag}
+    git push origin :refs/tags/${tag} || true
+    git tag ${podspec_version}
+    git push origin main --tags
+EOF
+        exit 1
+    fi
+done
