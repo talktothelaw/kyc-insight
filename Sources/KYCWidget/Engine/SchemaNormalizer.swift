@@ -103,8 +103,9 @@ enum SchemaNormalizer {
         case "sysSelect": return .sysSelect
         case "file":
             // Liveness override — selfie field on liveness providers becomes
-            // a video capture, not a static file upload.
-            let livenessProviders: Set<String> = ["face_match_nin", "liveness_check"]
+            // a video capture, not a static file upload. inperson_nin included:
+            // NINAuth needs a live base64 selfie, not a file-upload fileId.
+            let livenessProviders: Set<String> = ["face_match_nin", "liveness_check", "inperson_nin"]
             if field.name == "selfieImage" && livenessProviders.contains(provider.type) {
                 return .liveness
             }
@@ -208,7 +209,7 @@ enum SchemaNormalizer {
         // the section shows exactly one entry; BuildSubmission still packs
         // both kycPayload entries from the LivenessValue. Mirrors the web fix
         // at kyc-web-wiget-v2/src/engine/normalize.ts.
-        let livenessProviders: Set<String> = ["liveness_check", "face_match_nin"]
+        let livenessProviders: Set<String> = ["liveness_check", "face_match_nin", "inperson_nin"]
         if livenessProviders.contains(provider.type) && fields.contains(where: { $0.kind == .liveness }) {
             fields = fields.filter { $0.name != "liveliness_images" }
         }

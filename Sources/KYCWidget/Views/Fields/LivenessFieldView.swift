@@ -111,6 +111,14 @@ struct LivenessFieldView: View {
         Task {
             do {
                 let api = session.makeLivenessAPI()
+                // face_match_nin: NINAuth requires EXACTLY 4 frames; inperson_nin:
+                // selfie-only (0) when the business config allows it.
+                let challengesPerSession: Int?
+                switch field.kycType {
+                case "face_match_nin": challengesPerSession = 4
+                case "inperson_nin": challengesPerSession = 0
+                default: challengesPerSession = nil
+                }
                 let input = LivenessAPI.CreateInput(
                     userRef: session.config.userRef,
                     levelSlug: session.config.levelSlug,
@@ -118,7 +126,8 @@ struct LivenessFieldView: View {
                         userAgent: "KYCWidget-iOS",
                         platform: UIDevice.current.systemName + " " + UIDevice.current.systemVersion,
                         cameraLabel: "front"
-                    )
+                    ),
+                    challengesPerSession: challengesPerSession
                 )
                 let dto = try await api.createSession(input)
                 await MainActor.run {
