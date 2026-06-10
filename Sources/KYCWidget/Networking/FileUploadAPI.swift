@@ -72,22 +72,26 @@ final class FileUploadAPI {
             as: String.self
         )
 
-        // Step 2 — POST raw bytes to the REST upload route.
-        try await postBytes(data: data, fileName: fileName, fileId: fileId)
+        // Step 2 — POST raw bytes; the route returns the S3 object key.
+        let s3Key = try await postBytes(data: data, fileName: fileName, fileId: fileId)
 
-        // Step 3 — mark upload complete.
+        // Step 3 — mark upload complete. `key` must be the S3 key from step 2 (not
+        // the fileId), and `fieldName` must match step 1 — the backend looks the row
+        // up by a fieldName scope, so omitting it misses the row and rejects the upload.
         let complete = """
-        mutation CompleteFileUploadTwo($status: Boolean!, $processToken: String!, $kycType: String!, $key: String) {
-          completeFileUploadTwo(status: $status, processToken: $processToken, kycType: $kycType, key: $key) {
+        mutation CompleteFileUploadTwo($status: Boolean!, $processToken: String!, $kycType: String!, $key: String, $fieldName: String) {
+          completeFileUploadTwo(status: $status, processToken: $processToken, kycType: $kycType, key: $key, fieldName: $fieldName) {
             error
             message
           }
         }
         """
         struct CompleteResult: Decodable { let error: Bool; let message: String? }
+        var completeVars: [String: Any] = ["status": true, "processToken": processToken, "kycType": kycType, "key": s3Key]
+        completeVars["fieldName"] = fieldName ?? NSNull()
         let _ = try await client.execute(
             query: complete,
-            variables: ["status": true, "processToken": processToken, "kycType": kycType, "key": fileId],
+            variables: completeVars,
             rootField: "completeFileUploadTwo",
             as: CompleteResult.self
         )
@@ -98,7 +102,7 @@ final class FileUploadAPI {
     /// Two-line multipart upload to `{apiBaseUrl}/file/upload/{fileId}`.
     /// Same `x-public-key` header as the GraphQL endpoint — backend's
     /// `fileUploadV2/fileRoute.ts` validates it.
-    private func postBytes(data: Data, fileName: String, fileId: String) async throws {
+    private func postBytes(data: Data, fileName: String, fileId: String) async throws -> String {
         let url = client.apiBaseURL.appendingPathComponent("file/upload/\(fileId)")
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
@@ -116,9 +120,13 @@ final class FileUploadAPI {
         line("--\(boundary)--")
         request.httpBody = body
 
-        let (_, response) = try await URLSession.shared.data(for: request)
+        let (respData, response) = try await URLSession.shared.data(for: request)
         if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
             throw GraphQLClientError.server(message: "File upload failed (HTTP \(http.statusCode)).", code: "UPLOAD_FAILED")
         }
+        // Route returns { message, error, key } — `key` is the S3 object key
+        // (`<fileId>.<ext>`); fall back to fileId only if absent.
+        let json = (try? JSONSerialization.jsonObject(with: respData)) as? [String: Any]
+        return (json?["key"] as? String) ?? fileId
     }
 }

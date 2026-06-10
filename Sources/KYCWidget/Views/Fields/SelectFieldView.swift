@@ -99,8 +99,29 @@ struct RadioFieldView: View {
     }
 }
 
+/// Polymorphic checkbox renderer — 1:1 with web `CheckboxField.tsx` and
+/// Android `CheckboxFieldKyc`.
+///   • options non-empty → multi-select GROUP; stored value is an
+///     `.array` of the selected option *values* (`[String]`), toggling
+///     membership.
+///   • no options        → single boolean toggle (`.bool`).
 @available(iOS 15.0, *)
 struct CheckboxFieldView: View {
+    let field: WidgetField
+    @ObservedObject var session: KYCWidgetSession
+
+    var body: some View {
+        if let options = field.options, !options.isEmpty {
+            CheckboxGroupFieldView(field: field, session: session, options: options)
+        } else {
+            CheckboxToggleFieldView(field: field, session: session)
+        }
+    }
+}
+
+/// Single boolean toggle. The label inside the box IS the field's label.
+@available(iOS 15.0, *)
+private struct CheckboxToggleFieldView: View {
     let field: WidgetField
     @ObservedObject var session: KYCWidgetSession
     @State private var checked = false
@@ -112,15 +133,7 @@ struct CheckboxFieldView: View {
                 session.setValue(.bool(checked), for: field.id)
             } label: {
                 HStack(spacing: 10) {
-                    ZStack {
-                        RoundedRectangle(cornerRadius: 4)
-                            .strokeBorder(checked ? KYCBrand.primary : Color(.systemGray3), lineWidth: 2)
-                            .frame(width: 20, height: 20)
-                        if checked {
-                            RoundedRectangle(cornerRadius: 4).fill(KYCBrand.primary).frame(width: 20, height: 20)
-                            Image(systemName: "checkmark").foregroundColor(.white).font(.system(size: 12, weight: .bold))
-                        }
-                    }
+                    CheckboxBox(checked: checked)
                     Text(field.label)
                         .font(.system(size: 14))
                         .foregroundColor(.primary)
@@ -135,6 +148,76 @@ struct CheckboxFieldView: View {
             .buttonStyle(.plain)
         }
         .onAppear { checked = session.values[field.id]?.boolValue ?? false }
+    }
+}
+
+/// Multi-select checkbox group. Stored value is the array of currently-checked
+/// option values; a non-array (initial nil, or a legacy boolean) reads as
+/// empty so the UI starts unchecked — exactly web's `Array.isArray(value) ? … : []`.
+@available(iOS 15.0, *)
+private struct CheckboxGroupFieldView: View {
+    let field: WidgetField
+    @ObservedObject var session: KYCWidgetSession
+    let options: [WidgetOption]
+
+    private var selected: [String] {
+        session.values[field.id]?.arrayValue?.compactMap { $0.stringValue } ?? []
+    }
+
+    private func toggle(_ optValue: String) {
+        let current = selected
+        let next = current.contains(optValue)
+            ? current.filter { $0 != optValue }
+            : current + [optValue]
+        session.setValue(.array(next.map { .string($0) }), for: field.id)
+    }
+
+    var body: some View {
+        FieldShell(
+            label: field.label, required: field.required,
+            helper: nil, error: session.fieldErrors[field.id]
+        ) {
+            VStack(spacing: 6) {
+                ForEach(options, id: \.value) { option in
+                    let isChecked = selected.contains(option.value)
+                    Button {
+                        toggle(option.value)
+                    } label: {
+                        HStack(spacing: 10) {
+                            CheckboxBox(checked: isChecked)
+                            Text(option.label).font(.system(size: 14)).foregroundColor(.primary)
+                            Spacer()
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 10)
+                        .background(
+                            RoundedRectangle(cornerRadius: 10)
+                                .fill(isChecked
+                                      ? KYCBrand.primary.opacity(0.08)
+                                      : Color(.secondarySystemBackground))
+                        )
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+    }
+}
+
+/// Shared square check-box visual used by both checkbox variants.
+@available(iOS 15.0, *)
+private struct CheckboxBox: View {
+    let checked: Bool
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 4)
+                .strokeBorder(checked ? KYCBrand.primary : Color(.systemGray3), lineWidth: 2)
+                .frame(width: 20, height: 20)
+            if checked {
+                RoundedRectangle(cornerRadius: 4).fill(KYCBrand.primary).frame(width: 20, height: 20)
+                Image(systemName: "checkmark").foregroundColor(.white).font(.system(size: 12, weight: .bold))
+            }
+        }
     }
 }
 #endif

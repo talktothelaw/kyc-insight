@@ -52,6 +52,16 @@ enum SectionValidator {
             }
             return nil
 
+        case .cacConsent:
+            // Internal-mode CAC business consent — same OTP shape as DL/Passport;
+            // satisfied once a consentAcceptanceId is stored. Lockstep with
+            // BuildSubmission's consent grouping (extracts consentAcceptanceId).
+            let cid = value?.dictValue?["consentAcceptanceId"]?.stringValue ?? ""
+            if cid.isEmpty && field.required {
+                return "Please complete CAC verification."
+            }
+            return nil
+
         case .cacBusinessLookup:
             let id = value?.dictValue?["kycSubmissionId"]?.stringValue
                 ?? value?.dictValue?["_id"]?.stringValue ?? ""
@@ -61,28 +71,33 @@ enum SectionValidator {
             return nil
 
         case .sysSelect:
-            // Walk to the LEAF composite (user may have picked an option 2+
-            // levels deep, e.g. corporate_policy_holder → cac_business_package).
-            // Validate the LEAF option's required fields against the leaf
-            // values dict — a one-level options.first(where:) would miss the
-            // nested leaf and silently skip all sub-field validation.
+            // 1:1 with web validate.ts sysSelect branch (lines 66-83) and
+            // Android SectionValidator.kt: find the IMMEDIATE option for THIS
+            // level's selectedType, validate each of ITS required sub-fields,
+            // and RECURSE into a nested sysSelect sub-field via the normal
+            // validate() call — which re-enters this branch for the next level.
+            // This validates required fields at EVERY level, not just the
+            // deepest leaf (resolveLeaf jumped straight to the leaf and skipped
+            // any required fields sitting on intermediate options).
             let composite = value?.dictValue
-            let (leafType, leafValues) = SysSelectTraversal.resolveLeaf(composite)
-            guard let leaf = leafType, !leaf.isEmpty else {
+            let selectedType = composite?["selectedType"]?.stringValue
+            guard let selectedType, !selectedType.isEmpty else {
                 return field.required ? "\(field.label) is required." : nil
             }
-            guard let option = SysSelectTraversal.findSysSelectOptionByType(
-                field.sysSelectOptions, targetType: leaf
-            ) else {
+            // Immediate-level lookup — each composite's selectedType is the
+            // user's choice at THIS level. Deeper levels are reached by the
+            // recursion below, NOT by a tree-walk here.
+            guard let option = field.sysSelectOptions?.first(where: { $0.providerType == selectedType }) else {
                 return nil
             }
-            let subValues = leafValues ?? [:]
+            let subValues = composite?["values"]?.dictValue ?? [:]
             for sub in option.fields where sub.required {
                 let raw = subValues[sub.name]
                 // Dispatch to the sub-field's own per-kind validator FIRST —
                 // surfaces the actionable message ("Please complete NIN
-                // verification.", "Verify your BVN to continue.", etc.)
-                // instead of the generic "complete all fields" wall.
+                // verification.", "Verify your BVN to continue.", etc.) and
+                // recurses into a nested sysSelect — instead of the generic
+                // "complete all fields" wall.
                 if let err = validate(field: sub, value: raw) {
                     return err
                 }

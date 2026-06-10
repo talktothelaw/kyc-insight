@@ -535,6 +535,43 @@ public final class KYCWidgetSession: ObservableObject {
                 values: values
             )
 
+            // Branch B-CAC — composite CAC: a `cac_business_lookup` field
+            // HELD a kyc_v2 row (executeCacBusinessChecks) and this section
+            // has sibling fields. Finalize so those siblings merge into the
+            // SAME CAC submission rather than a separate row. A CAC-only
+            // section was already short-circuited by
+            // sectionIsAutoCompletedServerSide above. Mirrors web
+            // widgetStore.ts "Branch B-CAC" and Android KYCWidgetSession —
+            // ordered BEFORE the consent branch and the V1 fallback.
+            if let cacId = payload.cacKycSubmissionId {
+                let cacApi = CacAPI(client: client)
+                var additional: [String: Any] = [
+                    "kycPayload": payload.kycPayload.map { $0.toDictionary() },
+                ]
+                if let optionalType = payload.optionalType { additional["optionalType"] = optionalType }
+                do {
+                    let res = try await cacApi.finalizeCacRequirement(
+                        processToken: payload.processToken,
+                        kycSubmissionId: cacId,
+                        providerId: payload.providerId,
+                        levelSlug: payload.levelSlug,
+                        additionalPayload: additional
+                    )
+                    let state = (res.requirementState ?? "").lowercased()
+                    if state == "failed" || state == "rejected" {
+                        submissionError = res.message ?? "The CAC requirement could not be completed."
+                        widget?.dispatchError(.submissionFailed(message: submissionError ?? "Unknown"))
+                        phase = .ready
+                        return
+                    }
+                    await refreshSchemaPreservingCursor()
+                } catch {
+                    submissionError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                    widget?.dispatchError(.submissionFailed(message: submissionError ?? "Unknown"))
+                    phase = .ready
+                    return
+                }
+            }
             // V2 route — section carries a consent reference. Use the
             // V2 `finalizeRequirement` mutation (Flow A). The legacy
             // `KycSubmission` / `KycPayloadV2` input type doesn't
@@ -542,7 +579,7 @@ public final class KYCWidgetSession: ObservableObject {
             // 'Field "consentReference" is not defined by type
             // "KycPayloadV2"'. Mirrors `widgetStore.ts:submitSection`
             // Branch B in the web.
-            if let cid = payload.consentAcceptanceId {
+            else if let cid = payload.consentAcceptanceId {
                 print("[KYC Submit] V2 path — finalizeRequirement cid=\(cid.prefix(8))… ref=\(payload.consentReference?.prefix(8) ?? "-")")
                 let consentApi = ConsentAPI(client: client)
                 var additional: [String: Any] = [

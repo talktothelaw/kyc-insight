@@ -29,7 +29,8 @@ struct LivenessFieldView: View {
         case preparing      // creating session + asking camera
         case running        // capture sheet showing
         case submitting     // POST evidence in flight
-        case done(Verdict)
+        case done(Verdict?) // verdict nil when evidence submission failed but
+                            // the inline value was committed anyway (non-blocking)
         case error(String)
     }
 
@@ -43,6 +44,11 @@ struct LivenessFieldView: View {
     @State private var session_: LivenessSessionDTO?
     @State private var capturedPreview: UIImage?
     @State private var retrySecondsRemaining: Int? = nil
+    /// Non-blocking warning surfaced in the done card when evidence submission
+    /// failed but we committed the inline value anyway (web's `shellError`
+    /// note inside the done state). Lets the legacy submission path keep the
+    /// user moving instead of hard-blocking on a network / rate-limit error.
+    @State private var submitNote: String? = nil
 
     var body: some View {
         FieldShell(
@@ -145,9 +151,14 @@ struct LivenessFieldView: View {
 
     private func submit(frames: [UIImage], selfie: UIImage, progress: [LivenessChallengeProgress]) async {
         guard let dto = session_ else { return }
-        await MainActor.run { shell = .submitting }
+        await MainActor.run {
+            shell = .submitting
+            submitNote = nil
+        }
         let selfieB64 = selfie.jpegData(compressionQuality: 0.92)?.base64EncodedString() ?? ""
         let frameB64 = frames.compactMap { $0.jpegData(compressionQuality: 0.85)?.base64EncodedString() }
+        let selfieDataURL = "data:image/jpeg;base64,\(selfieB64)"
+        let frameDataURLs = frameB64.map { "data:image/jpeg;base64,\($0)" }
         let isoFmt = ISO8601DateFormatter()
         let completed: [LivenessCompletedChallengeInput] = progress.map {
             LivenessCompletedChallengeInput(
@@ -157,27 +168,30 @@ struct LivenessFieldView: View {
                 durationMs: $0.durationMs
             )
         }
+
+        // Non-blocking submission — exactly like web `LivenessField.handleComplete`.
+        // If `submitEvidence` throws (network / rate-limit), we DO NOT block the
+        // user: we surface a warning note and still commit the inline value so
+        // the legacy section-submit path keeps them moving. Only on success do
+        // we capture the verdict + fire `onLivenessSubmitted` with the server's
+        // session token.
+        var verdict: Verdict?
+        var sessionId: String?
         do {
             let api = session.makeLivenessAPI()
             let result = try await api.submitEvidence(LivenessAPI.SubmitInput(
                 sessionToken: dto.sessionToken,
-                selfieImage: "data:image/jpeg;base64,\(selfieB64)",
-                livelinessImages: frameB64.map { "data:image/jpeg;base64,\($0)" },
+                selfieImage: selfieDataURL,
+                livelinessImages: frameDataURLs,
                 completedChallenges: completed
             ))
+            verdict = Verdict(
+                status: result.status,
+                riskScore: result.riskScore,
+                failureReason: result.failureReason
+            )
+            sessionId = result.sessionToken
             await MainActor.run {
-                let verdict = Verdict(
-                    status: result.status,
-                    riskScore: result.riskScore,
-                    failureReason: result.failureReason
-                )
-                shell = .done(verdict)
-                // Commit the value into the widget so section submit picks it up.
-                session.setValue(.object([
-                    "selfieImage":       .string("data:image/jpeg;base64,\(selfieB64)"),
-                    "livelinessImages":  .array(frameB64.map { .string("data:image/jpeg;base64,\($0)") }),
-                    "livenessSessionId": .string(result.sessionToken),
-                ]), for: field.id)
                 session.dispatchLivenessSubmitted(
                     sessionToken: result.sessionToken,
                     status: result.status,
@@ -186,7 +200,26 @@ struct LivenessFieldView: View {
                 )
             }
         } catch {
-            await MainActor.run { shell = .error(error.localizedDescription) }
+            // Non-blocking: surface the warning but still commit the inline
+            // value so the legacy submission path keeps the user moving.
+            await MainActor.run {
+                submitNote = "Liveness session submission failed: \(error.localizedDescription). Continuing with inline submission."
+            }
+        }
+
+        // Snapshot into immutable copies for the final main-actor hop.
+        let finalVerdict = verdict
+        let finalSessionId = sessionId
+        await MainActor.run {
+            // Commit the value into the widget so section submit picks it up —
+            // committed in BOTH the success and failure paths (web parity).
+            var value: [String: AnyCodable] = [
+                "selfieImage":      .string(selfieDataURL),
+                "livelinessImages": .array(frameDataURLs.map { .string($0) }),
+            ]
+            if let finalSessionId { value["livenessSessionId"] = .string(finalSessionId) }
+            session.setValue(.object(value), for: field.id)
+            shell = .done(finalVerdict)
         }
     }
 
@@ -195,6 +228,7 @@ struct LivenessFieldView: View {
         capturedPreview = nil
         shell = .idle
         retrySecondsRemaining = nil
+        submitNote = nil
     }
 
     // ── retry countdown ────────────────────────────────────────────────
@@ -243,10 +277,14 @@ struct LivenessFieldView: View {
     }
 
     @ViewBuilder
-    private func doneCard(_ v: Verdict) -> some View {
-        let isApproved = v.status == "passed"
-        let isManualReview = v.status == "requires_manual_review"
-        let isFailed = v.status == "failed" || v.status == "expired"
+    private func doneCard(_ v: Verdict?) -> some View {
+        // Verdict nil means we never got a backend response (submission failed
+        // but the inline value was committed) — fall back to a neutral
+        // "submitted" tone, exactly like web's `verdict?.status ?? 'submitted'`.
+        let status = v?.status ?? "submitted"
+        let isApproved = status == "passed"
+        let isManualReview = status == "requires_manual_review"
+        let isFailed = status == "failed" || status == "expired"
         let iconName: String = isApproved
             ? "checkmark.seal.fill"
             : isFailed
@@ -260,14 +298,14 @@ struct LivenessFieldView: View {
                 : isFailed
                     ? "Liveness check didn't pass"
                     : "Liveness submitted"
-        let scoreSuffix: String = (isApproved && v.riskScore != nil)
-            ? " (score \(Int(v.riskScore!.rounded()))/100)" : ""
+        let scoreSuffix: String = (isApproved && v?.riskScore != nil)
+            ? " (score \(Int(v!.riskScore!.rounded()))/100)" : ""
         let body: String = isApproved
             ? "Your liveness check was approved automatically\(scoreSuffix)."
             : isManualReview
                 ? "A reviewer will confirm your verification shortly. You don't need to do anything else."
                 : isFailed
-                    ? (v.failureReason ?? "Please retake the check — make sure your face is well-lit and follow each prompt.")
+                    ? (v?.failureReason ?? "Please retake the check — make sure your face is well-lit and follow each prompt.")
                     : "Your selfie and challenge frames were captured."
         let showRetake = isFailed
         introCard(
@@ -276,6 +314,7 @@ struct LivenessFieldView: View {
             title: title,
             body: body,
             thumb: capturedPreview,
+            note: submitNote,
             cta: showRetake ? "Try again" : nil,
             ctaStyle: .primary,
             action: showRetake ? retake : nil
@@ -327,6 +366,7 @@ struct LivenessFieldView: View {
         title: String,
         body: String,
         thumb: UIImage? = nil,
+        note: String? = nil,
         cta: String? = nil,
         ctaStyle: CTAStyle = .primary,
         ctaDisabled: Bool = false,
@@ -350,6 +390,14 @@ struct LivenessFieldView: View {
                         .resizable().aspectRatio(contentMode: .fill)
                         .frame(width: 96, height: 96).clipped().cornerRadius(8)
                         .padding(.top, 8)
+                }
+                // Non-blocking warning note (web's `kyc-liveness-intro-note`).
+                if let note {
+                    Text(note)
+                        .font(.system(size: 12))
+                        .foregroundColor(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.top, 4)
                 }
             }
             Spacer(minLength: 8)

@@ -2,7 +2,7 @@ import XCTest
 @testable import KYCWidget
 
 /// Regression guard for the nested-sysSelect bug class. A leaf provider
-/// reachable through 2+ levels of sysSelect (e.g. select_legacy_policy_choice
+/// reachable through 2+ levels of sysSelect (e.g. kyc_marketplace
 /// → corporate_policy_holder → cac_business_package) was silently dropped by
 /// the one-level lookups in SectionValidator, BuildSubmission, and the session
 /// sub-value mirror.

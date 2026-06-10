@@ -14,6 +14,13 @@ enum BuildSubmission {
         var kycPayload: [KycPayloadItem]
         var consentAcceptanceId: String?
         var consentReference: String?
+        /// `kyc_v2._id` of a self-completing CAC verification (held by
+        /// executeCacBusinessChecks). When set, the session finalizes via
+        /// `finalizeCacRequirement` so this section's OTHER fields merge into
+        /// the SAME CAC submission instead of a separate, disconnected row.
+        /// Routing-only — NOT included in the GraphQL variables (mirrors web,
+        /// where buildSubmission surfaces it but submitKyc never sends it).
+        var cacKycSubmissionId: String?
 
         /// Convert to the dictionary the GraphQL `data` variable expects.
         func toVariable() -> [String: Any] {
@@ -53,6 +60,7 @@ enum BuildSubmission {
         var optionalType: String?
         var consentAcceptanceId: String?
         var consentReference: String?
+        var cacKycSubmissionId: String?
 
         for field in section.fields {
             let raw = values[field.id]
@@ -61,7 +69,7 @@ enum BuildSubmission {
                 // sysSelect composite values may be NESTED — the leaf option
                 // the user picked can sit 2+ levels deep. flatten walks the
                 // chain, sets optionalType to the LEAF type, surfaces a leaf
-                // consent reference, and emits payload entries for every
+                // consent / CAC reference, and emits payload entries for every
                 // non-special value at every level.
                 let flat = SysSelectTraversal.flattenSysSelect(raw?.dictValue)
                 if let leaf = flat.leafType { optionalType = leaf }
@@ -69,10 +77,11 @@ enum BuildSubmission {
                     consentAcceptanceId = cid
                     if let ref = flat.consentReference { consentReference = ref }
                 }
+                if let cacId = flat.cacKycSubmissionId { cacKycSubmissionId = cacId }
                 for entry in flat.entries {
                     items.append(.init(field: entry.name, value: stringify(entry.value)))
                 }
-            case .ninConsent, .driversLicenseConsent, .passportConsent:
+            case .ninConsent, .driversLicenseConsent, .passportConsent, .cacConsent:
                 if let dict = raw?.dictValue,
                    let cid = dict["consentAcceptanceId"]?.stringValue {
                     consentAcceptanceId = cid
@@ -80,11 +89,15 @@ enum BuildSubmission {
                 }
             case .cacBusinessLookup:
                 // CAC package is "self-completing": by the time the user
-                // taps Continue, executeCacBusinessChecks already wrote
-                // kyc_v2 server-side. The web emits nothing here and the
-                // submission flow detects the verified value to skip the
-                // round-trip. We mirror that.
-                break
+                // taps Continue, executeCacBusinessChecks already HELD a
+                // kyc_v2 row server-side. Emit no kycPayload entry; surface
+                // its reference so the session can finalize — merging any
+                // sibling fields into the SAME submission. A CAC-only section
+                // still short-circuits before any network call. Mirrors web
+                // buildSubmission.ts.
+                if let cac = raw?.dictValue, cac["verified"]?.boolValue == true {
+                    cacKycSubmissionId = cac["kycSubmissionId"]?.stringValue
+                }
             case .liveness:
                 // Liveness emits TWO entries on the wire: the selfie
                 // (named after the field) and a synthetic
@@ -139,7 +152,8 @@ enum BuildSubmission {
             optionalType: optionalType,
             kycPayload: filtered,
             consentAcceptanceId: consentAcceptanceId,
-            consentReference: consentReference
+            consentReference: consentReference,
+            cacKycSubmissionId: cacKycSubmissionId
         )
     }
 

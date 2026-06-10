@@ -15,8 +15,8 @@ import UIKit
 ///    that appears is for external consent providers (Mono NIN / BVN).
 struct RootView: View {
 
-    @State private var publicKey  = "NA_PUB_PROD-d762c143e897455f6088fa549e32f6d9"
-    @State private var slug       = "mno_kyc_supplier_registration_form"
+    @State private var publicKey  = "NA_PUB_PROD-b97fef4c1181d9eef7720368287f9d6c"
+    @State private var slug       = "kyc_marketplace"
     @State private var userRef    = "test_01"
     @State private var name       = "Sample Customer"
     @State private var levelSlug  = "tier_1"

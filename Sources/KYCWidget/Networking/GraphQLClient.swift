@@ -171,13 +171,16 @@ public final class GraphQLClient {
             throw GraphQLClientError.noData
         }
         do {
-            let raw = try JSONSerialization.data(withJSONObject: root, options: [])
+            // `.fragmentsAllowed`: a scalar root (e.g. RequestFileUploadTwo returns a
+            // bare String) otherwise raises an ObjC NSException ("Invalid top-level
+            // type") that this do/catch can't catch → app crash. Containers unaffected.
+            let raw = try JSONSerialization.data(withJSONObject: root, options: [.fragmentsAllowed])
             return try JSONDecoder().decode(T.self, from: raw)
         } catch {
             // Dump both the raw root JSON and the typed DecodingError so we
             // can see exactly what shape the server returned vs. what the
             // Swift type expected.
-            let rootJSON = (try? JSONSerialization.data(withJSONObject: root, options: [.prettyPrinted]))
+            let rootJSON = (try? JSONSerialization.data(withJSONObject: root, options: [.prettyPrinted, .fragmentsAllowed]))
                 .flatMap { String(data: $0, encoding: .utf8) } ?? "<unprintable>"
             Self.log.error("[GQL→\(rootField, privacy: .public)] decode FAILED: \(String(describing: error), privacy: .public)")
             Self.log.error("[GQL→\(rootField, privacy: .public)] root JSON was:\n\(rootJSON, privacy: .public)")

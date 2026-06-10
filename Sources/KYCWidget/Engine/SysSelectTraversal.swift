@@ -3,7 +3,7 @@ import Foundation
 /// Recursive helpers for walking the sysSelect option TREE. A
 /// ``SysSelectOption``'s `fields` may include another sysSelect, whose options
 /// can themselves carry nested sysSelect fields — real configs run 2–3 levels
-/// deep (e.g. `select_legacy_policy_choice` → `corporate_policy_holder` →
+/// deep (e.g. `kyc_marketplace` → `corporate_policy_holder` →
 /// `cac_business_package`).
 ///
 /// Every consumer that looks up an option by `providerType`, mirrors sub-field
@@ -78,6 +78,11 @@ enum SysSelectTraversal {
         var entries: [(name: String, value: AnyCodable)]
         var consentAcceptanceId: String?
         var consentReference: String?
+        /// `kyc_v2._id` of a self-completing CAC verification reached via this
+        /// sysSelect tree (mirrors web `flattenSysSelect.cacKycSubmissionId`).
+        /// Lets BuildSubmission route a nested CAC to `finalizeCacRequirement`
+        /// exactly like a top-level `cacBusinessLookup`.
+        var cacKycSubmissionId: String?
     }
 
     /// Walks `composite` and flattens it into one record:
@@ -93,12 +98,13 @@ enum SysSelectTraversal {
     /// the same `kycPayload` regardless of nesting depth.
     static func flattenSysSelect(_ composite: [String: AnyCodable]?, depth: Int = 0) -> Flat {
         guard let composite, depth <= maxDepth else {
-            return Flat(leafType: nil, entries: [], consentAcceptanceId: nil, consentReference: nil)
+            return Flat(leafType: nil, entries: [], consentAcceptanceId: nil, consentReference: nil, cacKycSubmissionId: nil)
         }
         var leafType: String? = composite["selectedType"]?.stringValue
         var entries: [(String, AnyCodable)] = []
         var cid: String?
         var cref: String?
+        var cacId: String?
         let subValues = composite["values"]?.dictValue ?? [:]
         for (name, value) in subValues {
             // Nested sysSelect — detected by the (selectedType, values) pair.
@@ -109,6 +115,7 @@ enum SysSelectTraversal {
                 entries.append(contentsOf: nested.entries)
                 if let n = nested.consentAcceptanceId { cid = n }
                 if let r = nested.consentReference { cref = r }
+                if let k = nested.cacKycSubmissionId { cacId = k }
                 continue
             }
             // Consent value (NIN / DL / passport) — surface its references.
@@ -118,8 +125,17 @@ enum SysSelectTraversal {
                 cref = dict["consentReference"]?.stringValue
                 continue
             }
+            // CAC business-lookup value (web `isCacBusinessLookupValue`) — a
+            // self-completing verification; surface its held kyc_v2 id, emit no
+            // entry (the row already exists server-side).
+            if let dict = value.dictValue,
+               dict["verified"]?.boolValue == true,
+               let k = dict["kycSubmissionId"]?.stringValue {
+                cacId = k
+                continue
+            }
             entries.append((name, value))
         }
-        return Flat(leafType: leafType, entries: entries, consentAcceptanceId: cid, consentReference: cref)
+        return Flat(leafType: leafType, entries: entries, consentAcceptanceId: cid, consentReference: cref, cacKycSubmissionId: cacId)
     }
 }

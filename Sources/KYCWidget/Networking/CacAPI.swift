@@ -46,6 +46,14 @@ public struct CacEnabledChecksResponse: Decodable, Sendable {
     public let checks: [CacEnabledCheck]?
 }
 
+public struct FinalizeCacRequirementResponse: Decodable, Sendable {
+    public let success: Bool
+    public let error: Bool
+    public let message: String?
+    public let requirementState: String?
+    public let kycSubmissionId: String?
+}
+
 @MainActor
 final class CacAPI {
     private let client: GraphQLClient
@@ -114,6 +122,42 @@ final class CacAPI {
             query: query, variables: [:],
             rootField: "getCacEnabledChecks",
             as: CacEnabledChecksResponse.self
+        )
+    }
+
+    /// Step 3 — merge a CAC section's post-verification form fields into the
+    /// held CAC submission so they land on ONE combined kyc_v2 row instead of a
+    /// separate, disconnected one. Mirrors consent `finalizeRequirement` but
+    /// keyed by the held CAC's `kycSubmissionId`. 1:1 with web
+    /// `cacApi.finalizeCacRequirement` / backend `services/cac`
+    /// `finalizeCacRequirement` resolver and Android `CacAPI.finalizeCacRequirement`.
+    ///
+    /// `additionalPayload` is the JSON `{ kycPayload: [{field, value, type?}], optionalType? }`.
+    func finalizeCacRequirement(
+        processToken: String,
+        kycSubmissionId: String,
+        providerId: String?,
+        levelSlug: String?,
+        additionalPayload: [String: Any]?
+    ) async throws -> FinalizeCacRequirementResponse {
+        let mutation = """
+        mutation finalizeCacRequirement($input: FinalizeCacRequirementInput!) {
+          finalizeCacRequirement(input: $input) {
+            success error message requirementState kycSubmissionId
+          }
+        }
+        """
+        var input: [String: Any] = [
+            "processToken":    processToken,
+            "kycSubmissionId": kycSubmissionId,
+        ]
+        if let providerId        { input["providerId"]        = providerId }
+        if let levelSlug         { input["levelSlug"]         = levelSlug }
+        if let additionalPayload { input["additionalPayload"] = additionalPayload }
+        return try await client.execute(
+            query: mutation, variables: ["input": input],
+            rootField: "finalizeCacRequirement",
+            as: FinalizeCacRequirementResponse.self
         )
     }
 }
