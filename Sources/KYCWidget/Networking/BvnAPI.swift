@@ -47,7 +47,12 @@ final class BvnAPI {
         )
     }
 
-    func requestFlow(processToken: String, kycType: String) async throws -> BvnFlow {
+    func requestFlow(
+        processToken: String,
+        kycType: String,
+        providerId: String? = nil,
+        levelSlug: String? = nil
+    ) async throws -> BvnFlow {
         // Types match the GraphQL schema at
         // `kyc-backend/src/services/kyc/typeDefs.ts:RBVNVerificationFlowType`
         // — msg:String, auth:Boolean, flag:Boolean, data:JSON. All are
@@ -61,16 +66,19 @@ final class BvnAPI {
             let data: AnyCodable?
         }
         let mutation = """
-        mutation RequestBVNVerificationFlow($processToken: String, $kycType: String) {
-          RequestBVNVerificationFlow(processToken: $processToken, kycType: $kycType) {
+        mutation RequestBVNVerificationFlow($processToken: String, $kycType: String, $providerId: String, $levelSlug: String) {
+          RequestBVNVerificationFlow(processToken: $processToken, kycType: $kycType, providerId: $providerId, levelSlug: $levelSlug) {
             msg auth flag data
           }
         }
         """
         print("[KYC BvnAPI] requestFlow processToken=\(processToken.prefix(8))… kycType=\(kycType)")
+        var variables: [String: Any] = ["processToken": processToken, "kycType": kycType]
+        if let providerId { variables["providerId"] = providerId }
+        if let levelSlug { variables["levelSlug"] = levelSlug }
         let raw = try await client.execute(
             query: mutation,
-            variables: ["processToken": processToken, "kycType": kycType],
+            variables: variables,
             rootField: "RequestBVNVerificationFlow",
             as: RawFlow.self
         )

@@ -243,9 +243,13 @@ struct BvnFieldView: View {
         statusMessage = nil
         print("[KYC BvnField] start → kycType=\(bvnKycType)")
         do {
+            // Tier pinning — the webhook's kyc_v2 row lands pinned to this
+            // section's provider/level like every other submission.
             let flow = try await makeAPI().requestFlow(
                 processToken: session.schema?.processToken ?? "",
-                kycType: bvnKycType
+                kycType: bvnKycType,
+                providerId: session.currentSection?.providerId,
+                levelSlug: session.currentStep?.slug
             )
             guard let s = flow.redirectUrl, let url = URL(string: s) else {
                 print("[KYC BvnField] start FAILED — no redirectUrl. msg=\(flow.msg)")
