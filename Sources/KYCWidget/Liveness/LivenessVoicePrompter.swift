@@ -22,7 +22,7 @@ final class LivenessVoicePrompter {
     /// as the web `speechSynthesis.cancel(); speak(u)` pattern.
     func speak(_ text: String) {
         guard enabled, !text.isEmpty else { return }
-        synthesizer.stopSpeaking(at: .immediate)
+        if synthesizer.isSpeaking { synthesizer.stopSpeaking(at: .immediate) }
         let u = AVSpeechUtterance(string: text)
         u.rate = AVSpeechUtteranceDefaultSpeechRate
         u.volume = 0.9
@@ -53,11 +53,11 @@ final class LivenessVoicePrompter {
 
     private func configureAudioSession() {
         do {
-            // .ambient + .mixWithOthers: don't interrupt the host app's
-            // music / podcasts when the synthesiser talks. .duckOthers
-            // would briefly drop the volume — friendly default.
+            // .playback, NOT .ambient — .ambient is muted by the ring/silent
+            // switch, which silenced the cues for most users. .duckOthers
+            // keeps host-app audio alive, just dipped while a cue speaks.
             try AVAudioSession.sharedInstance().setCategory(
-                .ambient,
+                .playback,
                 mode: .spokenAudio,
                 options: [.mixWithOthers, .duckOthers]
             )

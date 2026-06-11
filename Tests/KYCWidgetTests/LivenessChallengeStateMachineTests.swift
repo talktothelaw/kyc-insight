@@ -142,4 +142,82 @@ final class LivenessChallengeStateMachineTests: XCTestCase {
         }))
         XCTAssertEqual(m.stage, .submitting)
     }
+
+    // MARK: - jitter grace: ≤graceFrames misses freeze the hold, more resets
+
+    func test_transientMiss_freezesHoldInsteadOfResetting() {
+        let m = LivenessChallengeStateMachine()
+        m.begin(sequence: ["LOOK_STRAIGHT", "TAKE_SELFIE"])
+        warmup(m)
+        feedFrames(m, count: LivenessChallengeStateMachine.holdFrames, centeredOkSignals())
+        m.advanceToActive()
+        let lost = FaceFrameSignals(
+            faceDetected: false, earAvg: 0.3, yawRatio: 0.5,
+            faceCentered: false, brightness: 180,
+            smileScore: 0, mouthOpenRatio: 0
+        )
+        // 6 good + 2 jitter (≤ grace) + 6 good = 12 net passes → done.
+        feedFrames(m, count: 6, centeredOkSignals())
+        feedFrames(m, count: LivenessChallengeStateMachine.graceFrames, lost)
+        feedFrames(m, count: 6, centeredOkSignals())
+        XCTAssertEqual(m.completed.count, 1)
+        XCTAssertEqual(m.completed.first?.code, "LOOK_STRAIGHT")
+    }
+
+    func test_extendedMiss_resetsHold() {
+        let m = LivenessChallengeStateMachine()
+        m.begin(sequence: ["LOOK_STRAIGHT", "TAKE_SELFIE"])
+        warmup(m)
+        feedFrames(m, count: LivenessChallengeStateMachine.holdFrames, centeredOkSignals())
+        m.advanceToActive()
+        let lost = FaceFrameSignals(
+            faceDetected: false, earAvg: 0.3, yawRatio: 0.5,
+            faceCentered: false, brightness: 180,
+            smileScore: 0, mouthOpenRatio: 0
+        )
+        feedFrames(m, count: 6, centeredOkSignals())
+        feedFrames(m, count: LivenessChallengeStateMachine.graceFrames + 1, lost)
+        feedFrames(m, count: LivenessChallengeStateMachine.holdFrames - 1, centeredOkSignals())
+        XCTAssertEqual(m.completed.count, 0, "hold must restart after an extended miss")
+        feedFrames(m, count: 1, centeredOkSignals())
+        XCTAssertEqual(m.completed.count, 1)
+    }
+
+    // MARK: - depthOk gate (TrueDepth anti-spoof; nil = no depth hardware)
+
+    private func signals(depthOk: Bool?) -> FaceFrameSignals {
+        FaceFrameSignals(
+            faceDetected: true, earAvg: 0.30, yawRatio: 0.5,
+            faceCentered: true, brightness: 180,
+            smileScore: 0, mouthOpenRatio: 0, depthOk: depthOk
+        )
+    }
+
+    func test_flatDepth_doesNotAdvanceDetecting() {
+        let m = LivenessChallengeStateMachine()
+        m.begin(sequence: ["LOOK_STRAIGHT", "TAKE_SELFIE"])
+        warmup(m)
+        feedFrames(m, count: LivenessChallengeStateMachine.holdFrames * 2, signals(depthOk: false))
+        XCTAssertEqual(m.stage, .detecting)
+    }
+
+    func test_flatDepth_resetsChallengeHold() {
+        let m = LivenessChallengeStateMachine()
+        m.begin(sequence: ["LOOK_STRAIGHT", "TAKE_SELFIE"])
+        warmup(m)
+        feedFrames(m, count: LivenessChallengeStateMachine.holdFrames, centeredOkSignals())
+        m.advanceToActive()
+        feedFrames(m, count: LivenessChallengeStateMachine.holdFrames * 2, signals(depthOk: false))
+        XCTAssertEqual(m.completed.count, 0, "Flat-depth frames must not pass a challenge")
+    }
+
+    func test_trueAndNilDepth_doNotBlock() {
+        let m = LivenessChallengeStateMachine()
+        m.begin(sequence: ["LOOK_STRAIGHT", "TAKE_SELFIE"])
+        warmup(m)
+        feedFrames(m, count: LivenessChallengeStateMachine.holdFrames, signals(depthOk: true))
+        m.advanceToActive()
+        feedFrames(m, count: LivenessChallengeStateMachine.holdFrames, centeredOkSignals())  // depthOk = nil
+        XCTAssertEqual(m.completed.count, 1)
+    }
 }

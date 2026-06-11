@@ -134,6 +134,34 @@ enum SysSelectTraversal {
                 cacId = k
                 continue
             }
+            // Liveness value — lower to the SAME two wire entries as the
+            // top-level liveness branch: selfie (named after the field) +
+            // synthetic liveliness_images. Stringified-whole → backend 107.
+            if let dict = value.dictValue,
+               dict["livelinessImages"] != nil || dict["selfieImage"] != nil {
+                let selfie = dict["selfieImage"]?.stringValue
+                    ?? dict["fileId"]?.stringValue ?? ""
+                entries.append((name, .string(selfie)))
+                if let frames = dict["livelinessImages"]?.arrayValue {
+                    let arr = frames.compactMap { $0.stringValue }
+                    if let data = try? JSONSerialization.data(withJSONObject: arr),
+                       let json = String(data: data, encoding: .utf8) {
+                        entries.append(("liveliness_images", .string(json)))
+                    }
+                }
+                continue
+            }
+            // Uploaded file/image value — wire shape is the bare fileId
+            // (backend swaps it for the S3 key). Mirrors the top-level branch.
+            if let fileId = value.dictValue?["fileId"]?.stringValue {
+                entries.append((name, .string(fileId)))
+                continue
+            }
+            // Location value `{_id, name}` — wire shape is the bare _id.
+            if let locId = value.dictValue?["_id"]?.stringValue {
+                entries.append((name, .string(locId)))
+                continue
+            }
             entries.append((name, value))
         }
         return Flat(leafType: leafType, entries: entries, consentAcceptanceId: cid, consentReference: cref, cacKycSubmissionId: cacId)

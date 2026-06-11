@@ -71,6 +71,8 @@ public final class LivenessChallengeStateMachine {
     public static let smileScoreThreshold = 0.40
     public static let mouthOpenRatioThreshold = 0.05
     public static let warmupFrames = 8
+    /// Consecutive failing frames tolerated before the hold resets.
+    public static let graceFrames = 2
 
     public weak var delegate: LivenessStateDelegate?
 
@@ -80,6 +82,9 @@ public final class LivenessChallengeStateMachine {
     public private(set) var currentIndex: Int = -1
 
     private var holdCounter = 0
+    // Consecutive failing frames. ≤ graceFrames freezes the hold instead
+    // of resetting it — one jittery frame shouldn't erase 11 good ones.
+    private var missStreak = 0
     private var blinkState: BlinkState = .open
     private var blinkClosedFrames = 0
     private var blinkCount = 0
@@ -96,6 +101,7 @@ public final class LivenessChallengeStateMachine {
         self.completed = []
         self.currentIndex = -1
         self.holdCounter = 0
+        self.missStreak = 0
         self.blinkState = .open
         self.blinkClosedFrames = 0
         self.blinkCount = 0
@@ -145,6 +151,7 @@ public final class LivenessChallengeStateMachine {
     public func advanceToActive() {
         guard case .readyFor(let code) = stage else { return }
         holdCounter = 0
+        missStreak = 0
         blinkState = .open
         blinkClosedFrames = 0
         blinkCount = 0
@@ -153,10 +160,15 @@ public final class LivenessChallengeStateMachine {
     }
 
     private func ingestDuringDetecting(_ s: FaceFrameSignals) {
-        guard s.faceDetected, s.faceCentered, s.brightness >= Self.minBrightness else {
-            holdCounter = 0
+        // depthOk == false → TrueDepth says the scene is flat (photo/
+        // screen replay); the frame doesn't count. nil = no depth hardware.
+        let ok = s.faceDetected && s.faceCentered
+            && s.brightness >= Self.minBrightness && s.depthOk != false
+        guard ok else {
+            registerMiss()
             return
         }
+        missStreak = 0
         holdCounter += 1
         if holdCounter >= Self.holdFrames {
             advanceToReadyForNext()
@@ -164,21 +176,26 @@ public final class LivenessChallengeStateMachine {
     }
 
     private func ingestDuringChallenge(_ code: String, signals s: FaceFrameSignals) {
-        guard s.faceDetected, s.brightness >= Self.minBrightness else {
-            holdCounter = 0
+        let qualityOk = s.faceDetected && s.brightness >= Self.minBrightness && s.depthOk != false
+        // Short-circuit keeps blink state untouched on quality-failed frames.
+        let passed = qualityOk && passesCondition(code: code, signals: s)
+        guard passed else {
+            registerMiss()
             return
         }
-        let passed = passesCondition(code: code, signals: s)
-        if passed {
-            holdCounter += 1
-        } else {
-            holdCounter = 0
-        }
+        missStreak = 0
+        holdCounter += 1
         let requiredHold = code == "BLINK_TWICE" ? 1 : Self.holdFrames
         if holdCounter >= requiredHold {
             recordPass(code: code)
             advanceToReadyForNext()
         }
+    }
+
+    /// ≤ `graceFrames` consecutive misses freeze the hold; more resets it.
+    private func registerMiss() {
+        missStreak += 1
+        if missStreak > Self.graceFrames { holdCounter = 0 }
     }
 
     private func passesCondition(code: String, signals s: FaceFrameSignals) -> Bool {
@@ -252,6 +269,7 @@ public final class LivenessChallengeStateMachine {
         }
         let next = sequence[currentIndex]
         holdCounter = 0
+        missStreak = 0
         challengeStartedAt = Date()
         setStage(.readyFor(next))
     }

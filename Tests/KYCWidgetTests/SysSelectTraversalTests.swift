@@ -181,4 +181,84 @@ final class SysSelectTraversalTests: XCTestCase {
         XCTAssertNil(flat.leafType)
         XCTAssertTrue(flat.entries.isEmpty)
     }
+
+    // MARK: - flattenSysSelect: rich-value lowering (liveness / file / location)
+    // Regression: a liveness value nested under a sysSelect was stringified
+    // whole into one garbage entry and the synthetic `liveliness_images`
+    // entry never emitted → backend "Missing required fields" Error 107.
+
+    func test_flattenSysSelect_lowersNestedLivenessToSelfiePlusLivelinessImages() throws {
+        let liveness: AnyCodable = .object([
+            "selfieImage": .string("data:image/jpeg;base64,SELFIE"),
+            "livelinessImages": .array([
+                .string("data:image/jpeg;base64,F1"),
+                .string("data:image/jpeg;base64,F2"),
+            ]),
+            "livenessSessionId": .string("sess-1"),
+        ])
+        let composite: [String: AnyCodable] = [
+            "selectedType": .string("liveness_check"),
+            "values": .object(["selfieImage": liveness]),
+        ]
+        let flat = SysSelectTraversal.flattenSysSelect(composite)
+        XCTAssertEqual(flat.leafType, "liveness_check")
+        XCTAssertEqual(flat.entries.count, 2)
+        let selfie = flat.entries.first { $0.name == "selfieImage" }
+        XCTAssertEqual(selfie?.value.stringValue, "data:image/jpeg;base64,SELFIE")
+        let frames = flat.entries.first { $0.name == "liveliness_images" }
+        let json = try XCTUnwrap(frames?.value.stringValue, "expected a synthetic liveliness_images entry")
+        // JSONSerialization may escape '/' — decode to compare contents.
+        let decoded = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String])
+        XCTAssertEqual(decoded, ["data:image/jpeg;base64,F1", "data:image/jpeg;base64,F2"])
+    }
+
+    func test_flattenSysSelect_lowersLivenessInsideDeepNestedChain() {
+        let liveness: AnyCodable = .object([
+            "selfieImage": .string("data:image/jpeg;base64,S"),
+            "livelinessImages": .array([.string("data:image/jpeg;base64,F")]),
+        ])
+        let inner: AnyCodable = .object([
+            "selectedType": .string("liveness_check"),
+            "values": .object(["selfieImage": liveness]),
+        ])
+        let outer: [String: AnyCodable] = [
+            "selectedType": .string("identity_method"),
+            "values": .object(["verification_mode": inner]),
+        ]
+        let flat = SysSelectTraversal.flattenSysSelect(outer)
+        XCTAssertEqual(flat.leafType, "liveness_check")
+        let names = flat.entries.map(\.name)
+        XCTAssertTrue(names.contains("liveliness_images"), "expected liveliness_images, got \(names)")
+    }
+
+    func test_flattenSysSelect_lowersNestedFileValueToFileId() {
+        let file: AnyCodable = .object([
+            "fileId": .string("64b2f0a1c2d3e4f5a6b7c8d9"),
+            "uploaded": .bool(true),
+            "fileName": .string("doc.pdf"),
+        ])
+        let composite: [String: AnyCodable] = [
+            "selectedType": .string("corporate_policy_holder"),
+            "values": .object(["policy_document": file]),
+        ]
+        let flat = SysSelectTraversal.flattenSysSelect(composite)
+        XCTAssertEqual(flat.entries.count, 1)
+        XCTAssertEqual(flat.entries.first?.name, "policy_document")
+        XCTAssertEqual(flat.entries.first?.value.stringValue, "64b2f0a1c2d3e4f5a6b7c8d9")
+    }
+
+    func test_flattenSysSelect_lowersNestedLocationValueToId() {
+        let loc: AnyCodable = .object([
+            "_id": .string("loc-1"),
+            "name": .string("Lagos"),
+        ])
+        let composite: [String: AnyCodable] = [
+            "selectedType": .string("address_check"),
+            "values": .object(["branch_location": loc]),
+        ]
+        let flat = SysSelectTraversal.flattenSysSelect(composite)
+        XCTAssertEqual(flat.entries.count, 1)
+        XCTAssertEqual(flat.entries.first?.name, "branch_location")
+        XCTAssertEqual(flat.entries.first?.value.stringValue, "loc-1")
+    }
 }

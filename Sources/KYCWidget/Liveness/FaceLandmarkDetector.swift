@@ -30,10 +30,11 @@ public struct FaceFrameSignals: Sendable, Equatable {
     /// Set to 1.0 when no face / landmarks unavailable.
     public let earAvg: Double
 
-    /// Horizontal head pose, normalised so 0.5 is centred. < 0.35 → user
-    /// turned head to OUR left; > 0.65 → user turned head to OUR right.
-    /// Same convention as web `computeYawRatio` so server-side validation
-    /// and dashboard review treat both clients identically.
+    /// Horizontal head pose, normalised so 0.5 is centred — SUBJECT-
+    /// relative: < 0.35 → the subject turned THEIR head left; > 0.65 →
+    /// THEIR right. Matches the spoken instruction ("turn your head to
+    /// the left") on front and back cameras alike. Same convention as
+    /// Android.
     public let yawRatio: Double
 
     /// Face bounding box centred + reasonable size? Single combined flag
@@ -56,6 +57,31 @@ public struct FaceFrameSignals: Sendable, Equatable {
     /// OPEN_MOUTH challenge — threshold 0.05 mirrors the web hook.
     public let mouthOpenRatio: Double
 
+    /// TrueDepth liveness verdict: false = the scene looks FLAT (photo /
+    /// screen replay), true = real 3D relief, nil = no depth hardware.
+    /// Android has no depth source and always carries nil.
+    public let depthOk: Bool?
+
+    public init(
+        faceDetected: Bool,
+        earAvg: Double,
+        yawRatio: Double,
+        faceCentered: Bool,
+        brightness: Double,
+        smileScore: Double,
+        mouthOpenRatio: Double,
+        depthOk: Bool? = nil
+    ) {
+        self.faceDetected = faceDetected
+        self.earAvg = earAvg
+        self.yawRatio = yawRatio
+        self.faceCentered = faceCentered
+        self.brightness = brightness
+        self.smileScore = smileScore
+        self.mouthOpenRatio = mouthOpenRatio
+        self.depthOk = depthOk
+    }
+
     public static let empty = FaceFrameSignals(
         faceDetected: false,
         earAvg: 1.0,
@@ -63,7 +89,8 @@ public struct FaceFrameSignals: Sendable, Equatable {
         faceCentered: false,
         brightness: 128,
         smileScore: 0,
-        mouthOpenRatio: 0
+        mouthOpenRatio: 0,
+        depthOk: nil
     )
 }
 
@@ -84,15 +111,23 @@ public final class FaceLandmarkDetector {
     /// the actual buffer (front camera frames are mirrored; back aren't).
     public enum CameraFacing { case front, back }
 
-    /// Run the detector on a single sample buffer. Returns the signals
-    /// + the most recent UIImage frame (for capture). The image is the
-    /// RGB representation matching what the user saw on screen — front
-    /// camera frames come out horizontally flipped, back-camera ones
-    /// don't.
-    public func analyze(sampleBuffer: CMSampleBuffer, facing: CameraFacing = .front) -> (signals: FaceFrameSignals, image: UIImage?) {
+    /// Hot path — run the detector on a single sample buffer and return
+    /// the frame's signals only (brightness sampled from the BGRA buffer,
+    /// depth verdict passed through from the camera session). No UIImage
+    /// is rendered here; evidence frames come from `makeImage` on demand.
+    public func analyzeSignals(
+        sampleBuffer: CMSampleBuffer,
+        facing: CameraFacing = .front,
+        depthOk: Bool? = nil
+    ) -> FaceFrameSignals {
         guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else {
-            return (FaceFrameSignals.empty, nil)
+            return .empty
         }
+        let brightness = Self.sampleBrightness(pixelBuffer)
+        let noFace = FaceFrameSignals(
+            faceDetected: false, earAvg: 1.0, yawRatio: 0.5, faceCentered: false,
+            brightness: brightness, smileScore: 0, mouthOpenRatio: 0, depthOk: depthOk
+        )
         // Vision orientation: front-camera buffers arrive mirrored about
         // the vertical axis when the device is held portrait → `.leftMirrored`
         // un-mirrors them. Back-camera buffers in portrait map to `.right`.
@@ -101,15 +136,52 @@ public final class FaceLandmarkDetector {
         do {
             try handler.perform([request])
         } catch {
-            return (FaceFrameSignals.empty, makeImage(from: pixelBuffer, facing: facing))
+            return noFace
         }
-        let image = makeImage(from: pixelBuffer, facing: facing)
         let observations = (request.results ?? [])
         guard observations.count == 1, let face = observations.first else {
-            return (FaceFrameSignals.empty, image)
+            return noFace
         }
-        let signals = signals(from: face, in: pixelBuffer)
-        return (signals, image)
+        return signals(from: face, in: pixelBuffer, brightness: brightness, depthOk: depthOk)
+    }
+
+    /// Full-frame CIContext render — costs ~ a frame's worth of GPU/CPU
+    /// work, so callers invoke it only when a frame must be KEPT
+    /// (challenge pass / selfie), never per analyzed frame.
+    public func makeImage(sampleBuffer: CMSampleBuffer, facing: CameraFacing = .front) -> UIImage? {
+        guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return nil }
+        return makeImage(from: pixelBuffer, facing: facing)
+    }
+
+    /// Mean Rec.709 luma (0–255) sampled on a 16-px grid straight from
+    /// the locked BGRA buffer — cheap enough to run every frame.
+    private static func sampleBrightness(_ pixelBuffer: CVPixelBuffer, stride: Int = 16) -> Double {
+        guard CVPixelBufferGetPixelFormatType(pixelBuffer) == kCVPixelFormatType_32BGRA else { return 128 }
+        CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly) }
+        guard let base = CVPixelBufferGetBaseAddress(pixelBuffer) else { return 128 }
+        let w = CVPixelBufferGetWidth(pixelBuffer)
+        let h = CVPixelBufferGetHeight(pixelBuffer)
+        let rowBytes = CVPixelBufferGetBytesPerRow(pixelBuffer)
+        let ptr = base.assumingMemoryBound(to: UInt8.self)
+        var total = 0.0
+        var count = 0
+        var y = 0
+        while y < h {
+            let row = y * rowBytes
+            var x = 0
+            while x < w {
+                let p = row + x * 4
+                let b = Double(ptr[p])
+                let g = Double(ptr[p + 1])
+                let r = Double(ptr[p + 2])
+                total += 0.2126 * r + 0.7152 * g + 0.0722 * b
+                count += 1
+                x += stride
+            }
+            y += stride
+        }
+        return count > 0 ? total / Double(count) : 128
     }
 
     private func makeImage(from pixelBuffer: CVPixelBuffer, facing: CameraFacing) -> UIImage? {
@@ -125,7 +197,12 @@ public final class FaceLandmarkDetector {
         return UIImage(cgImage: cg, scale: 1.0, orientation: .up)
     }
 
-    private func signals(from face: VNFaceObservation, in pixelBuffer: CVPixelBuffer) -> FaceFrameSignals {
+    private func signals(
+        from face: VNFaceObservation,
+        in pixelBuffer: CVPixelBuffer,
+        brightness: Double,
+        depthOk: Bool?
+    ) -> FaceFrameSignals {
         let w = CGFloat(CVPixelBufferGetWidth(pixelBuffer))
         let h = CGFloat(CVPixelBufferGetHeight(pixelBuffer))
 
@@ -136,16 +213,21 @@ public final class FaceLandmarkDetector {
         let box = face.boundingBox
         let cx = box.midX
         let cy = 1.0 - box.midY  // flip Y to match UIImage convention
-        // Match web `isFaceCentered`: nose within ±15% of centre.
-        let centered = abs(cx - 0.5) < 0.15 && abs(cy - 0.5) < 0.20
+        // Centering window sized to the on-screen oval (±33% wide) so
+        // "inside the oval" and "centered" agree; the old ±15% failed
+        // users who looked perfectly centred. Mirrors Android.
+        let centered = abs(cx - 0.5) < 0.22 && abs(cy - 0.5) < 0.25
         let sizeRatio = box.height
-        let sizeOk = sizeRatio > 0.25 && sizeRatio < 0.75
+        let sizeOk = sizeRatio > 0.25 && sizeRatio < 0.85
 
         // ── yaw ──────────────────────────────────────────────────────────
-        // VNFaceObservation.yaw is in radians (positive = head to OUR right).
-        // Map to the web's 0..1 ratio where 0.5 is centre.
+        // Yaw → SUBJECT-relative ratio: < 0.5 = the subject turned THEIR
+        // left. Both cameras are analysed in unmirrored space (the front
+        // buffer's connection-mirror is undone by the .leftMirrored
+        // orientation hint), so one sign convention serves front AND back.
+        // The old `-` classified every left turn as right.
         let yawRadians = face.yaw?.doubleValue ?? 0
-        let yawRatio = 0.5 - max(min(yawRadians / .pi, 0.5), -0.5)
+        let yawRatio = 0.5 + max(min(yawRadians / .pi, 0.5), -0.5)
 
         // ── landmarks (eyes + mouth) ─────────────────────────────────────
         var ear = 1.0
@@ -166,9 +248,10 @@ public final class FaceLandmarkDetector {
             earAvg: ear,
             yawRatio: yawRatio,
             faceCentered: centered && sizeOk,
-            brightness: 128, // brightness sampled at capture time, not here
+            brightness: brightness,
             smileScore: smile,
-            mouthOpenRatio: mouthOpen
+            mouthOpenRatio: mouthOpen,
+            depthOk: depthOk
         )
     }
 

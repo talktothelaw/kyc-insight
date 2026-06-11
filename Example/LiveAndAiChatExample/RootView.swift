@@ -86,6 +86,8 @@ struct RootView: View {
                             preset("Production", "https://kyc-api.netapps.ng/graphql")
                             preset("Localhost",  "http://localhost:3000/graphql")
                             preset("Sim host",   "http://127.0.0.1:3000/graphql")
+                            // Same ngrok dev tunnel as the Android sample's PROXY preset.
+                            preset("PROXY",      "https://emerging-fleet-vervet.ngrok-free.app/graphql")
                         }
                     }
 

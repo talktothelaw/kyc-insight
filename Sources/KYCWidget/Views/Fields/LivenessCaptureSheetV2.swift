@@ -28,12 +28,22 @@ struct LivenessCaptureSheetV2: View {
             if let error = coordinator.errorMessage {
                 errorView(error)
             } else {
-                CameraPreviewView(session: coordinator.camera.session)
-                    .ignoresSafeArea()
-
-                faceOvalOverlay
-                    .ignoresSafeArea()
-                    .allowsHitTesting(false)
+                // WYSIWYG camera box — pinned to the sensor's 4:3 aspect so
+                // the user sees the FULL analysis frame. A full-screen
+                // aspect-fill crop hid ~40% of the sensor width: faces
+                // overflowed the oval at selfie distance and users backed
+                // away until detection lost them.
+                GeometryReader { geo in
+                    ZStack {
+                        CameraPreviewView(session: coordinator.camera.session)
+                        faceOvalOverlay
+                    }
+                    .frame(width: geo.size.width, height: geo.size.width * 4.0 / 3.0)
+                    .clipped()
+                    .position(x: geo.size.width / 2, y: geo.size.height / 2)
+                }
+                .ignoresSafeArea()
+                .allowsHitTesting(false)
 
                 VStack(spacing: 0) {
                     topBar
@@ -126,12 +136,15 @@ struct LivenessCaptureSheetV2: View {
 
     private var faceOvalOverlay: some View {
         GeometryReader { geo in
+            // Geometry == the 4:3 camera box. Oval centred on the FRAME
+            // centre so it matches the detector's ±15%/±20% centering gate;
+            // 66% of frame width fits a face at normal selfie distance.
             let w = geo.size.width
             let h = geo.size.height
-            let rx = w * 0.36
-            let ry = h * 0.30
+            let rx = w * 0.33
+            let ry = h * 0.345
             let centerX = w / 2
-            let centerY = h * 0.44
+            let centerY = h * 0.5
             let armLen = min(rx, ry) * 0.28
             let acquired = coordinator.faceDetected && coordinator.faceCentered
             let ringColor: Color = acquired ? .green : .white

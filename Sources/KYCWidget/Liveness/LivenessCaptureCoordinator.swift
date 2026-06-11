@@ -67,13 +67,30 @@ final class LivenessCaptureCoordinator: ObservableObject, LivenessStateDelegate 
             // mutate state on the main actor.
             guard let self else { return }
             let facing: FaceLandmarkDetector.CameraFacing = (self.camera.facing == .front) ? .front : .back
-            let (signals, image) = self.detector.analyze(sampleBuffer: buffer, facing: facing)
+            let signals = self.detector.analyzeSignals(
+                sampleBuffer: buffer,
+                facing: facing,
+                depthOk: self.camera.latestDepthOk
+            )
+            // Evidence images are only consumed on challenge-pass/selfie,
+            // which fire only during an active challenge — skip the
+            // full-frame CIContext render on every other frame.
+            let image: UIImage?
+            if case .challengeFor = self.machine.stage {
+                image = self.detector.makeImage(sampleBuffer: buffer, facing: facing)
+            } else {
+                image = nil
+            }
             Task { @MainActor in
-                self.lastFrame = image
+                if let image { self.lastFrame = image }
                 self.lastSignals = signals
-                self.faceDetected = signals.faceDetected
-                self.faceCentered = signals.faceCentered
-                self.lightingOk = signals.brightness >= LivenessChallengeStateMachine.minBrightness
+                // @Published fires objectWillChange on every assignment —
+                // only write on real transitions so SwiftUI isn't forced
+                // to re-evaluate the sheet at camera frame rate.
+                if self.faceDetected != signals.faceDetected { self.faceDetected = signals.faceDetected }
+                if self.faceCentered != signals.faceCentered { self.faceCentered = signals.faceCentered }
+                let lit = signals.brightness >= LivenessChallengeStateMachine.minBrightness
+                if self.lightingOk != lit { self.lightingOk = lit }
                 self.machine.ingest(signals)
             }
         }
