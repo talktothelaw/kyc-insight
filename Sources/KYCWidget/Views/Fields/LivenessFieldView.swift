@@ -116,6 +116,7 @@ struct LivenessFieldView: View {
                 let challengesPerSession: Int?
                 switch field.kycType {
                 case "face_match_nin": challengesPerSession = 4
+                case "inperson_score": challengesPerSession = 4
                 case "inperson_nin": challengesPerSession = 0
                 default: challengesPerSession = nil
                 }
