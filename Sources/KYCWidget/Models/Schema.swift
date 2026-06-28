@@ -12,6 +12,7 @@ public enum FieldKind: String, Sendable, Codable {
     case driversLicenseConsent, passportConsent, cacConsent
     case cacBusinessLookup
     case liveness, location
+    case dynamicCollection
     case unknown
 }
 
@@ -57,6 +58,19 @@ public struct WidgetField: Identifiable, Sendable, Codable {
     /// Sub-options for `sysSelect`. Empty for other kinds.
     public let sysSelectOptions: [SysSelectOption]?
 
+    /// Child fields for `dynamicCollection` (repeatable group) — the columns the
+    /// end user repeats per row. nil for other kinds. One level deep: children
+    /// are simple fields, never collections / sysSelect themselves.
+    public let itemFields: [WidgetField]?
+    /// Row rules for `dynamicCollection`. nil when not applicable.
+    public let minRows: Int?
+    public let maxRows: Int?
+    public let defaultRows: Int?
+    public let allowAdd: Bool?
+    public let allowDelete: Bool?
+    public let allowDuplicate: Bool?
+    public let allowReorder: Bool?
+
     /// Mirrored from the backend's `field.alreadySupplied` stamp
     /// (`kyc-backend/src/helpers/fieldSupplyResolver.ts`). True when the
     /// customer's existing approved/pending data satisfies this field
@@ -73,6 +87,14 @@ public struct WidgetField: Identifiable, Sendable, Codable {
         options: [WidgetOption]? = nil,
         kycType: String? = nil,
         sysSelectOptions: [SysSelectOption]? = nil,
+        itemFields: [WidgetField]? = nil,
+        minRows: Int? = nil,
+        maxRows: Int? = nil,
+        defaultRows: Int? = nil,
+        allowAdd: Bool? = nil,
+        allowDelete: Bool? = nil,
+        allowDuplicate: Bool? = nil,
+        allowReorder: Bool? = nil,
         alreadySupplied: Bool? = nil
     ) {
         self.id = id
@@ -83,7 +105,27 @@ public struct WidgetField: Identifiable, Sendable, Codable {
         self.options = options
         self.kycType = kycType
         self.sysSelectOptions = sysSelectOptions
+        self.itemFields = itemFields
+        self.minRows = minRows
+        self.maxRows = maxRows
+        self.defaultRows = defaultRows
+        self.allowAdd = allowAdd
+        self.allowDelete = allowDelete
+        self.allowDuplicate = allowDuplicate
+        self.allowReorder = allowReorder
         self.alreadySupplied = alreadySupplied
+    }
+
+    /// Returns a copy with a new `id` — used to render a dynamicCollection
+    /// child field under a per-row session key.
+    func withID(_ newID: String) -> WidgetField {
+        WidgetField(
+            id: newID, name: name, label: label, kind: kind, required: required,
+            options: options, kycType: kycType, sysSelectOptions: sysSelectOptions,
+            itemFields: itemFields, minRows: minRows, maxRows: maxRows, defaultRows: defaultRows,
+            allowAdd: allowAdd, allowDelete: allowDelete, allowDuplicate: allowDuplicate,
+            allowReorder: allowReorder, alreadySupplied: alreadySupplied
+        )
     }
 }
 

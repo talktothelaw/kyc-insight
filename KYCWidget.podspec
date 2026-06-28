@@ -1,6 +1,6 @@
 Pod::Spec.new do |s|
   s.name          = "KYCWidget"
-  s.version       = "0.3.1"
+  s.version       = "0.4.0"
   s.summary       = "Native iOS SDK for the KYC Insight verification widget."
   s.description   = <<~DESC
     KYCWidget is the iOS host for the KYC Insight verification widget.

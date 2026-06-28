@@ -131,6 +131,13 @@ enum BuildSubmission {
                    let id = dict["_id"]?.stringValue {
                     items.append(.init(field: field.name, value: id))
                 }
+            case .dynamicCollection:
+                // The whole repeatable group collapses to ONE entry: the
+                // JSON-stringified rows array (each row = child values keyed by
+                // name + a permanent _rowId). Empty → "" so it's dropped below.
+                // Reuses the checkbox array-stringify precedent.
+                let rows = raw?.arrayValue ?? []
+                items.append(.init(field: field.name, value: rows.isEmpty ? "" : stringify(raw)))
             default:
                 items.append(.init(field: field.name, value: stringify(raw)))
             }

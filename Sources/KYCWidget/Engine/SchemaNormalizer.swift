@@ -132,6 +132,7 @@ enum SchemaNormalizer {
         case "checkbox": return .checkbox
         case "image":    return .image
         case "url":      return .url
+        case "dynamicCollection":                 return .dynamicCollection
         case "__nin_consent_step__":              return .ninConsent
         case "__drivers_license_consent_step__":  return .driversLicenseConsent
         case "__passport_consent_step__":         return .passportConsent
@@ -174,8 +175,24 @@ enum SchemaNormalizer {
         // upload mutation knows which slot to target.
         let kycType: String? = (kind == .file || kind == .liveness) ? provider.type : nil
 
+        // Dynamic Collection: normalize child fields with the SAME pipeline (so
+        // each gets its proper kind / label / options), one level deep. Children
+        // arrive without an _id (backend strips it) → synthesise a stable one.
+        var itemFields: [WidgetField]?
+        if kind == .dynamicCollection, let rawChildren = raw.itemFields {
+            let parentId = raw._id ?? ""
+            itemFields = rawChildren.enumerated().map { idx, child in
+                let childId = (child._id?.isEmpty == false)
+                    ? child._id!
+                    : "\(parentId):item:\(child.name.isEmpty ? String(idx) : child.name)"
+                let withId = child.withId(childId)
+                return normalizeField(withId, provider: provider)
+            }
+        }
+        let isCollection = kind == .dynamicCollection
+
         return WidgetField(
-            id: raw._id,
+            id: raw._id ?? "",
             name: raw.name,
             label: formatLabel(raw.title.isEmpty ? raw.name : raw.title),
             kind: kind,
@@ -183,6 +200,15 @@ enum SchemaNormalizer {
             options: options,
             kycType: kycType,
             sysSelectOptions: sysSelectOptions,
+            itemFields: itemFields,
+            // allow* default to true (opt-OUT) — matches the dashboard builder.
+            minRows: isCollection ? raw.minRows : nil,
+            maxRows: isCollection ? raw.maxRows : nil,
+            defaultRows: isCollection ? raw.defaultRows : nil,
+            allowAdd: isCollection ? (raw.allowAdd != false) : nil,
+            allowDelete: isCollection ? (raw.allowDelete != false) : nil,
+            allowDuplicate: isCollection ? (raw.allowDuplicate != false) : nil,
+            allowReorder: isCollection ? (raw.allowReorder != false) : nil,
             alreadySupplied: raw.alreadySupplied
         )
     }
