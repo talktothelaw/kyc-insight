@@ -216,4 +216,5 @@ If you subclassed `KYCWidgetViewController`, make sure your `viewDidLoad` calls 
 open Example/KYCWidgetExample.xcodeproj
 ```
 
-Build to a simulator or device. The example shows a form with the widget config fields prefilled and an event log that mirrors every lifecycle callback as it fires.
+Build to a simulator or device. The example shows a form with the widget config fields prefilled and an event log that mirrors every lifecycle callback as it fires. 
+By Lawrence
