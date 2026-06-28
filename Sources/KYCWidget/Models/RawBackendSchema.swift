@@ -8,7 +8,10 @@ import Foundation
 /// directly; everything goes through ``SchemaNormalizer/normalize(_:)``
 /// which produces the typed ``WidgetSchema`` the UI binds to.
 struct RawField: Decodable {
-    let _id: String
+    /// Optional because dynamicCollection child fields (`itemFields`) are stored
+    /// as Mixed subdocs WITHOUT an `_id` (datasource.normalizeChildFields strips
+    /// it) — the normalizer synthesises a stable id for those.
+    let _id: String?
     let name: String
     let title: String
     let inputType: String
@@ -18,6 +21,22 @@ struct RawField: Decodable {
     /// so the normalizer can branch on the field's `inputType`.
     let options: [AnyCodable]?
     let required: Bool?
+    /// Dynamic Collection (repeatable group): child fields + row config. Present
+    /// only when `inputType == "dynamicCollection"`. Recurses the same RawField
+    /// (one level — children never carry their own itemFields). Arrives verbatim
+    /// via the createMerchantCustomer JSON passthrough.
+    // `var … = nil` keeps the synthesised memberwise init source-compatible with
+    // existing callers that don't pass these dynamicCollection-only fields, while
+    // STILL exposing them as settable init params (a `let … = nil` would be
+    // excluded from the memberwise init). Decodable decodes them when present.
+    var itemFields: [RawField]? = nil
+    var minRows: Int? = nil
+    var maxRows: Int? = nil
+    var defaultRows: Int? = nil
+    var allowAdd: Bool? = nil
+    var allowDelete: Bool? = nil
+    var allowDuplicate: Bool? = nil
+    var allowReorder: Bool? = nil
     /// Server-stamped: does the customer's existing data satisfy this
     /// specific field? Computed by
     /// `kyc-backend/src/helpers/fieldSupplyResolver.ts:stampAlreadySuppliedOnLevel`
@@ -25,6 +44,18 @@ struct RawField: Decodable {
     /// widget render only what's still missing on a previously-
     /// approved tier without guessing.
     let alreadySupplied: Bool?
+
+    /// Returns a copy with `_id` replaced — used to stamp a synthesised id on a
+    /// dynamicCollection child field that arrived without one.
+    func withId(_ newId: String) -> RawField {
+        RawField(
+            _id: newId, name: name, title: title, inputType: inputType,
+            options: options, required: required, itemFields: itemFields,
+            minRows: minRows, maxRows: maxRows, defaultRows: defaultRows,
+            allowAdd: allowAdd, allowDelete: allowDelete, allowDuplicate: allowDuplicate,
+            allowReorder: allowReorder, alreadySupplied: alreadySupplied
+        )
+    }
 }
 
 struct RawProviderData: Decodable {

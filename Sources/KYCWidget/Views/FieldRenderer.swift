@@ -40,6 +40,7 @@ struct FieldRenderer: View {
         case .cacBusinessLookup:  CacBusinessLookupFieldView(field: field, session: session)
         case .sysSelect:          SysSelectFieldView(field: field, session: session)
         case .location:           LocationFieldView(field: field, session: session)
+        case .dynamicCollection:  DynamicCollectionFieldView(field: field, session: session)
         case .unknown:            PlaceholderFieldView(field: field, hint: "Unknown field kind from backend")
         }
     }

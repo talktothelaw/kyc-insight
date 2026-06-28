@@ -107,6 +107,31 @@ enum SectionValidator {
             }
             return nil
 
+        case .dynamicCollection:
+            let rows = value?.arrayValue ?? []
+            // Effective minimum: explicit minRows, but never below 1 when required.
+            let minRows = max(field.minRows ?? 0, field.required ? 1 : 0)
+            if rows.count < minRows {
+                if field.required && minRows == 1 && (field.minRows ?? 0) <= 1 {
+                    return "\(field.label) is required."
+                }
+                return "Add at least \(minRows) \(minRows == 1 ? "entry" : "entries") to \(field.label)."
+            }
+            if let mx = field.maxRows, rows.count > mx {
+                return "Add no more than \(mx) \(mx == 1 ? "entry" : "entries") to \(field.label)."
+            }
+            // Per-row: every required child must be satisfied (recurse into the
+            // child's own kind so email/number/url children are checked too).
+            for (i, row) in rows.enumerated() {
+                let rowDict = row.dictValue ?? [:]
+                for child in field.itemFields ?? [] where child.required {
+                    if let err = validate(field: child, value: rowDict[child.name]) {
+                        return "Row \(i + 1): \(err)"
+                    }
+                }
+            }
+            return nil
+
         default:
             // Plain inputs — required check, then format check.
             let empty = isEmpty(value)

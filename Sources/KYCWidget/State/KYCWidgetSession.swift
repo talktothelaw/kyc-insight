@@ -446,6 +446,7 @@ public final class KYCWidgetSession: ObservableObject {
         // verify BVN successfully, tap Continue, and the backend would
         // reject with "KYC payload cannot be empty. Error Code: 101".
         mirrorSysSelectSubValues(in: section)
+        mirrorDynamicCollectionValues(in: section)
         // Per-kind validation in SectionValidator — matches the web's
         // engine/processing/validate.ts behaviour 1:1 so the same
         // backend schema validates identically on both clients (file
@@ -454,6 +455,29 @@ public final class KYCWidgetSession: ObservableObject {
         // email/url/number/time format checks, etc.).
         fieldErrors = SectionValidator.validate(section: section, values: values)
         return fieldErrors.isEmpty
+    }
+
+    /// Fold each dynamicCollection row's per-row child values (written flat by
+    /// the field renderer under ``DynamicCollectionKeys/childFieldID(_:_:_:)``)
+    /// back into the collection's rows array — keyed by child name + `_rowId` —
+    /// so the canonical value at `values[field.id]` matches the web's
+    /// `CollectionRow[]` shape that BuildSubmission stringifies. Mirrors
+    /// ``mirrorSysSelectSubValues(in:)``.
+    private func mirrorDynamicCollectionValues(in section: WidgetSection) {
+        for field in section.fields where field.kind == .dynamicCollection {
+            guard let rows = values[field.id]?.arrayValue else { continue }
+            let rebuilt: [AnyCodable] = rows.map { row in
+                var rowDict = row.dictValue ?? [:]
+                if let rowId = rowDict["_rowId"]?.stringValue {
+                    for child in field.itemFields ?? [] {
+                        let key = DynamicCollectionKeys.childFieldID(field.id, rowId, child.name)
+                        if let v = values[key] { rowDict[child.name] = v }
+                    }
+                }
+                return .object(rowDict)
+            }
+            values[field.id] = .array(rebuilt)
+        }
     }
 
     /// Copy each sub-field's value (stored at top-level by the field
