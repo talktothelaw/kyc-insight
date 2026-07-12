@@ -44,8 +44,8 @@ final class LivenessVoicePrompter {
     static let instructionsByCode: [String: String] = [
         "LOOK_STRAIGHT":   "Look straight at the camera",
         "BLINK_TWICE":     "Open your eyes wide, then blink",
-        "TURN_HEAD_LEFT":  "Slowly turn your head to the left",
-        "TURN_HEAD_RIGHT": "Slowly turn your head to the right",
+        "TURN_HEAD_LEFT":  "Slowly turn your head to your left",
+        "TURN_HEAD_RIGHT": "Slowly turn your head to your right",
         "SMILE":           "Smile for the camera",
         "OPEN_MOUTH":      "Open your mouth wide",
         "TAKE_SELFIE":     "Hold still — capturing selfie",

@@ -32,6 +32,7 @@ struct JourneyOutlineView: View {
     private func tierRow(index: Int, step: WidgetStep) -> some View {
         let isActive = index == session.currentStepIndex
         let isApproved = stepIsApproved(step)
+        let status = tierStatus(step)
         // Tier-level frontier — can navigate to any tier <= tierFrontier.
         let canNavigate = index <= session.tierFrontier
         HStack(spacing: 10) {
@@ -57,9 +58,9 @@ struct JourneyOutlineView: View {
                 Text(step.name)
                     .font(.system(size: 14, weight: .semibold))
                     .foregroundColor(isActive ? .primary : (canNavigate ? .secondary : Color.secondary.opacity(0.6)))
-                Text("\(step.sections.count) section\(step.sections.count == 1 ? "" : "s")")
-                    .font(.system(size: 11))
-                    .foregroundColor(.secondary)
+                Text(tierStatusLabel(status, canNavigate: canNavigate))
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(tierStatusColor(status))
             }
             Spacer()
         }
@@ -109,6 +110,33 @@ struct JourneyOutlineView: View {
     private func stepIsApproved(_ step: WidgetStep) -> Bool {
         guard !step.sections.isEmpty else { return false }
         return step.sections.allSatisfy { $0.status == .approved }
+    }
+
+    private func tierStatus(_ step: WidgetStep) -> WidgetStatus {
+        guard !step.sections.isEmpty else { return .initialized }
+        let statuses = step.sections.map { $0.status }
+        if statuses.contains(.rejected) { return .rejected }
+        if statuses.allSatisfy({ $0 == .approved }) { return .approved }
+        if statuses.contains(where: { $0 == .pending || $0 == .approved }) { return .pending }
+        return .initialized
+    }
+
+    private func tierStatusLabel(_ status: WidgetStatus, canNavigate: Bool) -> String {
+        switch status {
+        case .approved: return "Approved"
+        case .rejected: return "Rejected"
+        case .pending: return "Pending"
+        default: return canNavigate ? "Not started" : "Locked"
+        }
+    }
+
+    private func tierStatusColor(_ status: WidgetStatus) -> Color {
+        switch status {
+        case .approved: return .green
+        case .rejected: return Color(red: 0.86, green: 0.15, blue: 0.15)
+        case .pending: return Color(red: 0.85, green: 0.47, blue: 0.02)
+        default: return .secondary
+        }
     }
 }
 #endif

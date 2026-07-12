@@ -318,7 +318,7 @@ public final class KYCWidgetSession: ObservableObject {
                 if section.status == .initialized
                     || section.status == .rejected
                     || section.requiresUpdate {
-                    return (stepIdx, secIdx)
+                    return clampToTierFrontier(stepIdx, secIdx)
                 }
             }
         }
@@ -328,11 +328,12 @@ public final class KYCWidgetSession: ObservableObject {
     // MARK: - Cursor navigation
 
     public func goToSection(stepIndex: Int, sectionIndex: Int) {
+        let target = clampToTierFrontier(stepIndex, sectionIndex)
         let prevStep = currentStepIndex
-        currentStepIndex = stepIndex
-        currentSectionIndex = sectionIndex
-        if prevStep != stepIndex, let step = schema?.steps[safe: stepIndex] {
-            widget?.dispatchLevelChange(KYCWidgetLevel(slug: step.slug, index: stepIndex))
+        currentStepIndex = target.step
+        currentSectionIndex = target.section
+        if prevStep != target.step, let step = schema?.steps[safe: target.step] {
+            widget?.dispatchLevelChange(KYCWidgetLevel(slug: step.slug, index: target.step))
         }
     }
 
@@ -367,6 +368,7 @@ public final class KYCWidgetSession: ObservableObject {
             return
         }
         guard currentStepIndex < schema.steps.count - 1 else { return }
+        guard currentStepIndex + 1 <= tierFrontier else { return }
         currentStepIndex += 1
         currentSectionIndex = 0
         if let s = currentStep {
@@ -377,11 +379,12 @@ public final class KYCWidgetSession: ObservableObject {
     }
 
     /// True when there's somewhere ahead of the current cursor — either a
-    /// later section in the current step, or a later step at all.
+    /// later section in the current step, or an unlocked later step.
     public var canGoForward: Bool {
         guard let step = currentStep, let schema else { return false }
         if currentSectionIndex < step.sections.count - 1 { return true }
         return currentStepIndex < schema.steps.count - 1
+            && currentStepIndex + 1 <= tierFrontier
     }
 
     // MARK: - Field values
@@ -417,19 +420,36 @@ public final class KYCWidgetSession: ObservableObject {
         return step.sections.count - 1
     }
 
-    /// Tier frontier — the first step that's not fully completed
-    /// OR has any section flagged `requiresUpdate`.
+    public func isStepApproved(_ step: WidgetStep) -> Bool {
+        !step.requiresUpdate
+            && !step.sections.isEmpty
+            && step.sections.allSatisfy { $0.status == .approved && !$0.requiresUpdate }
+    }
+
+    /// Tier frontier — the first step that is not yet fully APPROVED. A level
+    /// that is only submitted (pending) or rejected keeps the next level
+    /// locked until it has been approved.
     public var tierFrontier: Int {
         guard let schema, !schema.steps.isEmpty else { return -1 }
         for (i, step) in schema.steps.enumerated() {
-            if step.sections.isEmpty { return i }
-            if step.requiresUpdate { return i }
-            let allDone = step.sections.allSatisfy {
-                ($0.status == .approved || $0.status == .pending) && !$0.requiresUpdate
-            }
-            if !allDone { return i }
+            if !isStepApproved(step) { return i }
         }
         return schema.steps.count - 1
+    }
+
+    private func sectionFrontier(_ step: WidgetStep) -> Int {
+        if step.sections.isEmpty { return -1 }
+        for (i, s) in step.sections.enumerated() {
+            if (s.status != .approved && s.status != .pending) || s.requiresUpdate { return i }
+        }
+        return step.sections.count - 1
+    }
+
+    private func clampToTierFrontier(_ stepIndex: Int, _ sectionIndex: Int) -> (step: Int, section: Int) {
+        let frontier = tierFrontier
+        if frontier < 0 || stepIndex <= frontier { return (stepIndex, sectionIndex) }
+        guard let step = schema?.steps[safe: frontier] else { return (frontier, 0) }
+        return (frontier, max(0, sectionFrontier(step)))
     }
 
     private func validateCurrentSection() -> Bool {
@@ -725,9 +745,11 @@ public final class KYCWidgetSession: ObservableObject {
             completed = true
             widget?.dispatchSuccess()
         } else if isLastSection {
-            currentStepIndex += 1
-            currentSectionIndex = 0
-            if let step = currentStep {
+            let target = clampToTierFrontier(currentStepIndex + 1, 0)
+            let movedLevel = target.step != currentStepIndex
+            currentStepIndex = target.step
+            currentSectionIndex = target.section
+            if movedLevel, let step = currentStep {
                 widget?.dispatchLevelChange(
                     KYCWidgetLevel(slug: step.slug, index: currentStepIndex)
                 )

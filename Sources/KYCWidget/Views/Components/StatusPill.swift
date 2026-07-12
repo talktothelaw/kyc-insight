@@ -33,7 +33,7 @@ struct StatusPill: View {
         case .approved:    return "APPROVED"
         case .pending:     return "PENDING"
         case .rejected:    return "REJECTED"
-        case .initialized: return "PENDING"
+        case .initialized: return "NOT STARTED"
         }
     }
     private var foreground: Color {

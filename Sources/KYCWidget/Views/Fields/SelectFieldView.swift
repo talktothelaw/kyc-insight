@@ -47,7 +47,8 @@ struct SelectFieldView: View {
 
     private var selectedLabel: String {
         if selection.isEmpty { return "Select…" }
-        return field.options?.first(where: { $0.value == selection })?.label ?? selection
+        return field.options?.first(where: { $0.value == selection })?.label
+            ?? SchemaNormalizer.formatLabel(selection)
     }
 }
 
