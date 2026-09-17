@@ -35,7 +35,8 @@ public final class KYCWidget {
     public private(set) weak var hostViewController: KYCWidgetViewController?
     #endif
 
-    private var isDestroyed = false
+    /// Readable by the host controller so a dead widget can still dismiss.
+    public private(set) var isDestroyed = false
 
     public init(config: KYCWidgetConfig) {
         self.config = config
@@ -60,6 +61,10 @@ public final class KYCWidget {
         prewarmPermissions: Bool = true,
         completion: (() -> Void)? = nil
     ) {
+        // Re-arm. `destroy()` latches `isDestroyed` permanently, so without
+        // this a host that re-presents the same instance gets a widget whose
+        // close button is a no-op for the rest of the process.
+        isDestroyed = false
         let go: () -> Void = { [weak self] in
             guard let self else { return }
             do {

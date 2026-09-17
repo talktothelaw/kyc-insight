@@ -7,7 +7,20 @@ import SwiftUI
 @available(iOS 15.0, *)
 public final class KYCWidgetViewController: UIHostingController<AnyView> {
 
-    private weak var widget: KYCWidget?
+    // STRONG on purpose. Every other reference to KYCWidget in the SDK is
+    // weak (session.widget, widget.hostViewController), so before this the
+    // object stayed alive only while the host app happened to hold it:
+    //
+    //     let widget = KYCWidget(config: cfg)
+    //     widget.present(from: self)
+    //   }  // ← last strong reference gone, widget deallocated
+    //
+    // The controller stays on screen because UIKit retains it, but the close
+    // button (`[weak widget] in widget?.destroy()`) silently does nothing and
+    // every callback dispatched through `session.widget` is dropped. Owning it
+    // here ties its lifetime to the presentation. No cycle: the widget's
+    // reference back to this controller is weak.
+    private let widget: KYCWidget
     let session: KYCWidgetSession
 
     init(widget: KYCWidget) {
@@ -16,7 +29,18 @@ public final class KYCWidgetViewController: UIHostingController<AnyView> {
         session.widget = widget
         self.session = session
         super.init(rootView: AnyView(EmptyView()))
-        let close: () -> Void = { [weak widget] in widget?.destroy() }
+        // The close button must ALWAYS get the user off this screen. It goes
+        // through the widget so `onClose` fires and the session tears down,
+        // but falls back to dismissing directly if the widget was already
+        // destroyed — a dead × is worse than a missed callback.
+        let close: () -> Void = { [weak self] in
+            guard let self else { return }
+            if self.widget.isDestroyed {
+                self.dismissFromPresenter()
+            } else {
+                self.widget.destroy()
+            }
+        }
         self.rootView = AnyView(KYCWidgetView(session: session, onRequestClose: close))
         self.modalPresentationStyle = .fullScreen
         // The widget has its own design language (KYCBrand) tuned for the
@@ -32,6 +56,15 @@ public final class KYCWidgetViewController: UIHostingController<AnyView> {
 
     @MainActor required dynamic init?(coder aDecoder: NSCoder) {
         fatalError("init(coder:) is not supported")
+    }
+
+    /// Last-resort dismissal used when the widget can no longer do it.
+    func dismissFromPresenter() {
+        if let presenter = presentingViewController {
+            presenter.dismiss(animated: true)
+        } else {
+            navigationController?.popViewController(animated: true)
+        }
     }
 }
 #endif
