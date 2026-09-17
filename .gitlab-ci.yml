@@ -78,7 +78,9 @@ mirror_to_talktothelaw:
     - git remote add mirror "$MIRROR_URL"
     - git fetch origin "+refs/heads/*:refs/heads/*" "+refs/tags/*:refs/tags/*"
     - git push --prune mirror "+refs/heads/*:refs/heads/*" "+refs/tags/*:refs/tags/*"
-    - echo "Mirrored. Consumers on branch 'main' pick this up with: swift package update"
+    # Quoted as a whole: an unquoted YAML scalar containing ": " parses as a
+    # mapping, which GitLab rejects with "script config should be a string".
+    - 'echo "Mirrored — consumers on branch main pick this up with a package update"'
   rules:
     - if: $CI_PIPELINE_SOURCE == "push"
     - if: $CI_PIPELINE_SOURCE == "web"
