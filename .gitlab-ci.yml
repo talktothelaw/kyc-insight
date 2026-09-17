@@ -1,9 +1,66 @@
+# GitLab CI/CD pipeline for the KYC Insight iOS SDK.
+#
+# `main` IS the release channel — consumers resolve the package straight from
+# the branch, so whatever lands on main is live for them on their next
+# `swift package update`. There are no tags and nothing to publish.
+#
+#   // Swift Package Manager
+#   .package(url: "https://github.com/talktothelaw/kyc-insight.git", branch: "main")
+#
+#   # CocoaPods
+#   pod 'KYCWidget', :git => 'https://github.com/talktothelaw/kyc-insight.git', :branch => 'main'
+#
+# Because merging publishes, main has to stay green: `validate` builds and
+# tests the package, and the mirror only runs after it passes. A red build
+# therefore never reaches a consumer.
+#
+# Required CI/CD variables:
+#   MIRROR_SSH_PRIVATE_KEY — deploy key with write access to the GitHub mirror
+
 stages:
+  - validate
   - mirror
 
+# ─── validate ──────────────────────────────────────────────────────
+# Runs on every push and merge request. Needs a macOS runner tagged `macos`
+# with Xcode. Without one this job never runs and the mirror is UNGATED —
+# which removes the only thing between a broken commit and every consumer
+# app, so provision one before relying on main as the release channel.
+validate:
+  stage: validate
+  tags:
+    - macos
+  script:
+    # xcodebuild with an explicit iOS destination, NOT `swift build`: the
+    # package is .iOS(.v15)-only, and on a mac host `swift build` targets
+    # macOS and fails on iOS-only API (`accentColor is only available in
+    # macOS 10.15 or newer`). That would leave this job permanently red and,
+    # because the mirror needs it, block every release.
+    - xcodebuild -version
+    - xcodebuild -scheme KYCWidget -destination 'generic/platform=iOS' build
+    - |
+      SIM=$(xcrun simctl list devices available --json \
+        | python3 -c "import json,sys;d=json.load(sys.stdin)['devices'];print(next((x['udid'] for k,v in d.items() if 'iOS' in k for x in v), ''))")
+      if [ -z "$SIM" ]; then
+        echo "No iOS simulator on this runner — build verified, tests skipped."
+        exit 0
+      fi
+      xcodebuild test -scheme KYCWidget -destination "id=$SIM"
+  rules:
+    - if: '$SKIP_IOS_VALIDATE == "true"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH'
+
+# ─── mirror ────────────────────────────────────────────────────────
+# Pushes branches + tags to the GitHub repository consumers resolve from.
+# Runs only after `validate` succeeds, so main is never mirrored broken.
 mirror_to_talktothelaw:
   stage: mirror
   image: alpine:latest
+  needs:
+    - job: validate
+      optional: true
   variables:
     GIT_STRATEGY: clone
     GIT_DEPTH: 0
@@ -21,6 +78,7 @@ mirror_to_talktothelaw:
     - git remote add mirror "$MIRROR_URL"
     - git fetch origin "+refs/heads/*:refs/heads/*" "+refs/tags/*:refs/tags/*"
     - git push --prune mirror "+refs/heads/*:refs/heads/*" "+refs/tags/*:refs/tags/*"
+    - echo "Mirrored. Consumers on branch 'main' pick this up with: swift package update"
   rules:
     - if: $CI_PIPELINE_SOURCE == "push"
     - if: $CI_PIPELINE_SOURCE == "web"

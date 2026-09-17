@@ -6,32 +6,45 @@ Drop-in iOS SDK for KYC Insight identity verification. Configure it with your me
 
 ## Install
 
+The SDK is released from the `main` branch — there are no version tags.
+Point your dependency at the branch once and you pick up every release with a
+normal package update.
+
 ### Swift Package Manager
 
-In Xcode: **File → Add Package Dependencies…**
+In Xcode: **File → Add Package Dependencies…**, paste the URL, then set
+**Dependency Rule → Branch → `main`**.
 
 ```
-https://github.com/netapps/kyc-widget-ios.git
+https://github.com/talktothelaw/kyc-insight.git
 ```
 
 Or in your `Package.swift`:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/netapps/kyc-widget-ios.git", from: "0.1.0"),
+    .package(url: "https://github.com/talktothelaw/kyc-insight.git", branch: "main"),
 ],
 targets: [
     .target(name: "MyApp", dependencies: [
-        .product(name: "KYCWidget", package: "kyc-widget-ios"),
+        .product(name: "KYCWidget", package: "kyc-insight"),
     ]),
 ]
 ```
 
+Update to the latest with `swift package update` (or **File → Packages →
+Update to Latest Package Versions** in Xcode).
+
 ### CocoaPods
 
 ```ruby
-pod 'KYCWidget', '~> 0.1'
+pod 'KYCWidget',
+    :git => 'https://github.com/talktothelaw/kyc-insight.git',
+    :branch => 'main'
 ```
+
+Update with `pod update KYCWidget`. The pod is not published to CocoaPods
+Trunk — `pod 'KYCWidget', '~> 0.5'` will not resolve.
 
 Minimum iOS: **14.0**.
 

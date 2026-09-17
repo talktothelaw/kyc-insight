@@ -1,5 +1,8 @@
 Pod::Spec.new do |s|
   s.name          = "KYCWidget"
+  # Informational only. `main` is the release channel, so this is not used to
+  # resolve anything; it exists because CocoaPods requires the field. Bump it
+  # when the release line changes, to match Android's `releaseLine`.
   s.version       = "0.5.0"
   s.summary       = "Native iOS SDK for the KYC Insight verification widget."
   s.description   = <<~DESC
@@ -28,13 +31,17 @@ Pod::Spec.new do |s|
   s.platform      = :ios, "15.0"
   s.swift_version = "5.9"
   # GitHub mirror populated by the GitLab `mirror_to_talktothelaw` CI job
-  # in .gitlab-ci.yml. CocoaPods Trunk fetches tagged sources from this
-  # URL during `pod trunk push`, so the value MUST match the CI mirror
-  # target (MIRROR_URL). Updating one without the other will break
-  # publishing.
+  # in .gitlab-ci.yml; the URL MUST match that job's MIRROR_URL.
+  #
+  # Tracks `main` rather than a tag: merging to main is the release, and
+  # nothing is pushed to CocoaPods Trunk any more. Consumers point at the
+  # branch directly:
+  #
+  #   pod 'KYCWidget', :git => 'https://github.com/talktothelaw/kyc-insight.git',
+  #                    :branch => 'main'
   s.source        = {
     :git => "https://github.com/talktothelaw/kyc-insight.git",
-    :tag => s.version.to_s
+    :branch => "main"
   }
 
   s.source_files  = "Sources/KYCWidget/**/*.swift"
