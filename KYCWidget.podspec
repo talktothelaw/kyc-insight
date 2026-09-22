@@ -1,9 +1,9 @@
 Pod::Spec.new do |s|
   s.name          = "KYCWidget"
-  # Informational only. `main` is the release channel, so this is not used to
-  # resolve anything; it exists because CocoaPods requires the field. Bump it
-  # when the release line changes, to match Android's `releaseLine`.
-  s.version       = "0.5.0"
+  # The published version, and the git tag consumers resolve. Trunk is
+  # append-only, so this must be bumped for every push — re-pushing an
+  # existing version is rejected.
+  s.version       = "0.5.1"
   s.summary       = "Native iOS SDK for the KYC Insight verification widget."
   s.description   = <<~DESC
     KYCWidget is the iOS host for the KYC Insight verification widget.
@@ -33,15 +33,16 @@ Pod::Spec.new do |s|
   # GitHub mirror populated by the GitLab `mirror_to_talktothelaw` CI job
   # in .gitlab-ci.yml; the URL MUST match that job's MIRROR_URL.
   #
-  # Tracks `main` rather than a tag: merging to main is the release, and
-  # nothing is pushed to CocoaPods Trunk any more. Consumers point at the
-  # branch directly:
+  # A TAG, not a branch. CocoaPods Trunk refuses a branch source — "Git
+  # sources should specify either a tag or a commit" — because a branch is
+  # mutable and a published pod version must resolve to the same code
+  # forever. The tag is pushed to GitLab and the mirror job copies it to
+  # GitHub, which is where `pod trunk push` clones from during validation.
   #
-  #   pod 'KYCWidget', :git => 'https://github.com/talktothelaw/kyc-insight.git',
-  #                    :branch => 'main'
+  # Consumers need nothing special:  pod 'KYCWidget'
   s.source        = {
     :git => "https://github.com/talktothelaw/kyc-insight.git",
-    :branch => "main"
+    :tag => s.version.to_s
   }
 
   s.source_files  = "Sources/KYCWidget/**/*.swift"

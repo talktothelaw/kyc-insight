@@ -1,18 +1,25 @@
 # GitLab CI/CD pipeline for the KYC Insight iOS SDK.
 #
-# `main` IS the release channel — consumers resolve the package straight from
-# the branch, so whatever lands on main is live for them on their next
-# `swift package update`. There are no tags and nothing to publish.
+# Two release channels, both live. The mirror pushes every branch AND every
+# tag to the GitHub repository consumers resolve from, so how a consumer
+# pins is their choice:
 #
-#   // Swift Package Manager
+#   // Swift Package Manager — track main
 #   .package(url: "https://github.com/talktothelaw/kyc-insight.git", branch: "main")
+#   // Swift Package Manager — pin a tagged release
+#   .package(url: "https://github.com/talktothelaw/kyc-insight.git", from: "0.5.1")
 #
-#   # CocoaPods
-#   pod 'KYCWidget', :git => 'https://github.com/talktothelaw/kyc-insight.git', :branch => 'main'
+#   # CocoaPods — resolved from Trunk, no source needed
+#   pod 'KYCWidget'
 #
-# Because merging publishes, main has to stay green: `validate` builds and
-# tests the package, and the mirror only runs after it passes. A red build
-# therefore never reaches a consumer.
+# The Trunk release is a MANUAL step and deliberately so: `pod trunk push`
+# needs a session token tied to a person, not a CI variable. Cut the tag,
+# let this pipeline mirror it to GitHub (Trunk clones the tag from there
+# during validation), then run `pod trunk push KYCWidget.podspec`.
+#
+# Both channels publish by being pushed, so both have to stay green:
+# `validate` builds and tests the package on branches AND on tags, and the
+# mirror only runs after it passes. A red build never reaches a consumer.
 #
 # Required CI/CD variables:
 #   MIRROR_SSH_PRIVATE_KEY — deploy key with write access to the GitHub mirror
@@ -22,7 +29,7 @@ stages:
   - mirror
 
 # ─── validate ──────────────────────────────────────────────────────
-# Runs on every push and merge request. Needs a macOS runner tagged `macos`
+# Runs on every push, tag and merge request. Needs a macOS runner tagged `macos`
 # with Xcode. Without one this job never runs and the mirror is UNGATED —
 # which removes the only thing between a broken commit and every consumer
 # app, so provision one before relying on main as the release channel.
@@ -50,6 +57,10 @@ validate:
     - if: '$SKIP_IOS_VALIDATE == "true"'
       when: never
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    # Tags are a release channel too, so a tag pipeline must be gated by the
+    # same build. Without this the tag mirrors ungated — `needs: optional`
+    # lets the mirror run when validate did not exist for that pipeline.
+    - if: '$CI_COMMIT_TAG'
     - if: '$CI_COMMIT_BRANCH'
 
 # ─── mirror ────────────────────────────────────────────────────────
@@ -80,7 +91,7 @@ mirror_to_talktothelaw:
     - git push --prune mirror "+refs/heads/*:refs/heads/*" "+refs/tags/*:refs/tags/*"
     # Quoted as a whole: an unquoted YAML scalar containing ": " parses as a
     # mapping, which GitLab rejects with "script config should be a string".
-    - 'echo "Mirrored — consumers on branch main pick this up with a package update"'
+    - 'echo "Mirrored — branch consumers update via SPM/CocoaPods; tag consumers resolve the new tag"'
   rules:
     - if: $CI_PIPELINE_SOURCE == "push"
     - if: $CI_PIPELINE_SOURCE == "web"
