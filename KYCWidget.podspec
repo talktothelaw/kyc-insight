@@ -3,7 +3,13 @@ Pod::Spec.new do |s|
   # The published version, and the git tag consumers resolve. Trunk is
   # append-only, so this must be bumped for every push — re-pushing an
   # existing version is rejected.
-  s.version       = "0.5.1"
+  #
+  # 1.0.0 aligns iOS with Android: ng.netapps:kyc-insight is on the 1.0 line
+  # (1.0.36 at the time of writing) while this pod was still on 0.5.x. Same
+  # product, same widget, two version lines that read as unrelated — which
+  # made "which version are you on?" ambiguous for anyone supporting both
+  # platforms. No API change is implied by the major bump; it is alignment.
+  s.version       = "1.0.0"
   s.summary       = "Native iOS SDK for the KYC Insight verification widget."
   s.description   = <<~DESC
     KYCWidget is the iOS host for the KYC Insight verification widget.
