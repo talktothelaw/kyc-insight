@@ -24,6 +24,7 @@
 # Required CI/CD variables:
 #   MIRROR_SSH_PRIVATE_KEY — deploy key with write access to the GitHub mirror
 
+
 stages:
   - validate
   - mirror
