@@ -30,10 +30,13 @@ stages:
   - mirror
 
 # ─── validate ──────────────────────────────────────────────────────
-# Runs on every push, tag and merge request. Needs a macOS runner tagged `macos`
-# with Xcode. Without one this job never runs and the mirror is UNGATED —
-# which removes the only thing between a broken commit and every consumer
-# app, so provision one before relying on main as the release channel.
+# DISABLED until a macOS runner exists — see the rules below.
+#
+# When enabled it runs on every push, tag and merge request, and gates the
+# mirror so a broken commit never reaches a consumer app. Until then the
+# mirror is UNGATED: releases flow, but nothing builds them first. Provision
+# a runner tagged `macos` with Xcode and flip IOS_VALIDATE_ENABLED to close
+# that hole.
 validate:
   stage: validate
   tags:
@@ -54,15 +57,30 @@ validate:
         exit 0
       fi
       xcodebuild test -scheme KYCWidget -destination "id=$SIM"
+  # Opt-IN, not opt-out. This job needs a runner tagged `macos`; there is
+  # none. Under the old opt-out rules the job was still ADDED to every
+  # pipeline and sat Pending forever ("no runners that match all of the job's
+  # tags: macos"), and `mirror` — which needs it — waited behind it. That
+  # blocked every release for four commits while validating nothing, because
+  # the job never actually ran.
+  #
+  # `needs: optional: true` skips a job that is ABSENT from the pipeline, not
+  # one that is STUCK in it, so the only way to unblock the mirror is to keep
+  # validate out of the pipeline entirely until a runner exists.
+  #
+  # Provision a macOS runner, then set IOS_VALIDATE_ENABLED=true in
+  # Settings → CI/CD → Variables and the gate comes back with no code change.
   rules:
-    - if: '$SKIP_IOS_VALIDATE == "true"'
+    - if: '$IOS_VALIDATE_ENABLED != "true"'
       when: never
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
     # Tags are a release channel too, so a tag pipeline must be gated by the
-    # same build. Without this the tag mirrors ungated — `needs: optional`
-    # lets the mirror run when validate did not exist for that pipeline.
+    # same build.
     - if: '$CI_COMMIT_TAG'
     - if: '$CI_COMMIT_BRANCH'
+  # A stuck job should fail in minutes, not hold a release for hours. Even
+  # with the flag on, a runner that disappears cannot silently halt releases.
+  timeout: 30 minutes
 
 # ─── mirror ────────────────────────────────────────────────────────
 # Pushes branches + tags to the GitHub repository consumers resolve from.
