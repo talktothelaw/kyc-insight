@@ -47,10 +47,10 @@ struct RawField: Decodable {
 
     /// Returns a copy with `_id` replaced — used to stamp a synthesised id on a
     /// dynamicCollection child field that arrived without one.
-    func withId(_ newId: String) -> RawField {
+    func withId(_ newId: String, required newRequired: Bool? = nil) -> RawField {
         RawField(
             _id: newId, name: name, title: title, inputType: inputType,
-            options: options, required: required, itemFields: itemFields,
+            options: options, required: newRequired ?? required, itemFields: itemFields,
             minRows: minRows, maxRows: maxRows, defaultRows: defaultRows,
             allowAdd: allowAdd, allowDelete: allowDelete, allowDuplicate: allowDuplicate,
             allowReorder: allowReorder, alreadySupplied: alreadySupplied

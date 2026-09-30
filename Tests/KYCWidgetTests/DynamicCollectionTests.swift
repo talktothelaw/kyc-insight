@@ -22,13 +22,16 @@ final class DynamicCollectionTests: XCTestCase {
                 RawField(_id: nil, name: "full_name", title: "Full Name", inputType: "textInput", options: nil, required: true, alreadySupplied: nil),
                 RawField(_id: nil, name: "role", title: "Role", inputType: "select",
                          options: [.string("ceo"), .string("cfo")], required: false, alreadySupplied: nil),
+                RawField(_id: nil, name: "email", title: "Email", inputType: "textInput", options: nil, required: nil, alreadySupplied: nil),
             ],
             minRows: 1, maxRows: 5, allowReorder: false,
             alreadySupplied: nil
         )
         let f = SchemaNormalizer.normalizeField(raw, provider: provider())
         XCTAssertEqual(f.kind, .dynamicCollection)
-        XCTAssertEqual(f.itemFields?.count, 2)
+        XCTAssertEqual(f.itemFields?.count, 3)
+        XCTAssertEqual(f.itemFields?[1].required, false)
+        XCTAssertEqual(f.itemFields?[2].required, true)
         XCTAssertEqual(f.itemFields?[0].kind, .text)
         XCTAssertEqual(f.itemFields?[0].name, "full_name")
         XCTAssertFalse(f.itemFields?[0].id.isEmpty ?? true)   // synthesised id

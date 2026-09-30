@@ -185,7 +185,7 @@ enum SchemaNormalizer {
                 let childId = (child._id?.isEmpty == false)
                     ? child._id!
                     : "\(parentId):item:\(child.name.isEmpty ? String(idx) : child.name)"
-                let withId = child.withId(childId)
+                let withId = child.withId(childId, required: child.required ?? true)
                 return normalizeField(withId, provider: provider)
             }
         }
