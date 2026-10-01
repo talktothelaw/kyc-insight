@@ -9,7 +9,7 @@ Pod::Spec.new do |s|
   # product, same widget, two version lines that read as unrelated — which
   # made "which version are you on?" ambiguous for anyone supporting both
   # platforms. No API change is implied by the major bump; it is alignment.
-  s.version       = "1.0.1"
+  s.version       = "1.0.2"
   s.summary       = "Native iOS SDK for the KYC Insight verification widget."
   s.description   = <<~DESC
     KYCWidget is the iOS host for the KYC Insight verification widget.
