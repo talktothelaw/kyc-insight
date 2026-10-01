@@ -547,6 +547,11 @@ public final class KYCWidgetSession: ObservableObject {
 
     // MARK: - Submit
 
+    public func submitIfStillOn(sectionId: String) async {
+        guard phase == .ready, currentSection?.id == sectionId else { return }
+        await submitCurrentSection()
+    }
+
     public func submitCurrentSection() async {
         guard let section = currentSection, let step = currentStep else { return }
         guard let schema else { return }

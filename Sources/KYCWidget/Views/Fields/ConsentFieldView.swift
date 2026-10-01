@@ -583,6 +583,7 @@ struct ConsentFieldView: View {
     // MARK: - Polling
 
     private func poll() async {
+        let ownerSectionId = session.currentSection?.id
         phase = .polling
         pollAttempt = 0
         print("[KYC ConsentField] poll start — maxAttempts=\(pollMax) intervalSec=\(pollInterval) hasReference=\(consentReference != nil)")
@@ -599,6 +600,7 @@ struct ConsentFieldView: View {
                 case "auto_completed", "approved":
                     phase = .autoCompleted
                     updateValueWith(autoCompleted: true, awaiting: false)
+                    if let ownerSectionId { await session.submitIfStillOn(sectionId: ownerSectionId) }
                     return
                 case "awaiting_final_submission", "ready_for_finalization", "awaiting_user_submission", "pending_review":
                     phase = .awaitingFinalSubmission
