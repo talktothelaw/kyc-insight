@@ -106,7 +106,8 @@ final class LivenessAPITests: XCTestCase {
             userRef: "test_001",
             levelSlug: "tier_1",
             deviceMeta: LivenessDeviceMetaInput(userAgent: "iOS-Test", platform: "iOS-17", cameraLabel: nil),
-            challengesPerSession: 3
+            challengesPerSession: 3,
+            kycType: "face_match_nin"
         ))
         // — request inspection —
         let body = try XCTUnwrap(StubURLProtocol.lastBodyJSON)
@@ -119,6 +120,7 @@ final class LivenessAPITests: XCTestCase {
         XCTAssertEqual(input["userRef"] as? String, "test_001")
         XCTAssertEqual(input["levelSlug"] as? String, "tier_1")
         XCTAssertEqual(input["challengesPerSession"] as? Int, 3)
+        XCTAssertEqual(input["kycType"] as? String, "face_match_nin")
         let meta = try XCTUnwrap(input["deviceMeta"] as? [String: Any])
         XCTAssertEqual(meta["userAgent"] as? String, "iOS-Test")
         XCTAssertEqual(meta["platform"] as? String, "iOS-17")
@@ -130,6 +132,8 @@ final class LivenessAPITests: XCTestCase {
         XCTAssertEqual(result.status, "pending")
         XCTAssertEqual(result.challengeSequence, ["TURN_HEAD_LEFT", "BLINK_TWICE", "TAKE_SELFIE"])
         XCTAssertNil(result.riskScore)
+        XCTAssertTrue(query.contains("retriesRemaining"))
+        XCTAssertEqual(result.retriesRemaining, 0)
     }
 
     func test_submitEvidence_decodesPassedVerdict() async throws {
@@ -168,13 +172,39 @@ final class LivenessAPITests: XCTestCase {
     func test_retrySession_callsRightMutation() async throws {
         var refreshed = Self.samplePayload
         refreshed["retryCount"] = 1
+        refreshed["retriesRemaining"] = 2
         stub(rootField: "retryLivenessSession", payload: refreshed)
         let api = LivenessAPI(client: makeClient())
         let result = try await api.retrySession(token: "SESSION_TOKEN_42")
         XCTAssertEqual(result.retryCount, 1)
+        XCTAssertEqual(result.retriesRemaining, 2)
         let body = try XCTUnwrap(StubURLProtocol.lastBodyJSON)
         XCTAssertTrue((body["query"] as? String)?.contains("retryLivenessSession") ?? false)
         let variables = try XCTUnwrap(body["variables"] as? [String: Any])
         XCTAssertEqual(variables["sessionToken"] as? String, "SESSION_TOKEN_42")
+    }
+
+    func test_clientSettings_sendsLevelAndTypeAndDecodes() async throws {
+        stub(rootField: "livenessClientSettings", payload: ["skipMode": "OPTIONAL", "requireVideo": false, "maxRetries": 3])
+        let api = LivenessAPI(client: makeClient())
+        let settings = try await api.clientSettings(levelSlug: "tier_1", kycType: "liveness_check")
+        XCTAssertEqual(settings.skipMode, "OPTIONAL")
+        XCTAssertFalse(settings.requireVideo)
+        XCTAssertEqual(settings.maxRetries, 3)
+        let body = try XCTUnwrap(StubURLProtocol.lastBodyJSON)
+        let query = try XCTUnwrap(body["query"] as? String)
+        XCTAssertTrue(query.contains("livenessClientSettings(levelSlug: $levelSlug, kycType: $kycType)"))
+        XCTAssertTrue(query.contains("skipMode requireVideo maxRetries"))
+        let variables = try XCTUnwrap(body["variables"] as? [String: Any])
+        XCTAssertEqual(variables["levelSlug"] as? String, "tier_1")
+        XCTAssertEqual(variables["kycType"] as? String, "liveness_check")
+    }
+
+    func test_clientSettings_omitsNilVariables() async throws {
+        stub(rootField: "livenessClientSettings", payload: ["skipMode": "NONE", "requireVideo": false, "maxRetries": 3])
+        let api = LivenessAPI(client: makeClient())
+        _ = try await api.clientSettings(levelSlug: nil, kycType: nil)
+        let variables = try XCTUnwrap(StubURLProtocol.lastBodyJSON?["variables"] as? [String: Any])
+        XCTAssertTrue(variables.isEmpty)
     }
 }

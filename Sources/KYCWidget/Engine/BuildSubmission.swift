@@ -99,22 +99,12 @@ enum BuildSubmission {
                     cacKycSubmissionId = cac["kycSubmissionId"]?.stringValue
                 }
             case .liveness:
-                // Liveness emits TWO entries on the wire: the selfie
-                // (named after the field) and a synthetic
-                // `liveliness_images` entry that's a JSON-stringified
-                // array of frames. Mirrors buildSubmission.ts:87-96.
-                if let dict = raw?.dictValue {
-                    let selfie = dict["selfieImage"]?.stringValue ?? dict["fileId"]?.stringValue ?? ""
-                    items.append(.init(field: field.name, value: selfie))
-                    if let frames = dict["livelinessImages"]?.arrayValue {
-                        let arr = frames.compactMap { $0.stringValue }
-                        if let data = try? JSONSerialization.data(withJSONObject: arr),
-                           let json = String(data: data, encoding: .utf8) {
-                            items.append(.init(field: "liveliness_images", value: json))
-                        }
-                    }
-                } else {
-                    items.append(.init(field: field.name, value: ""))
+                // Liveness emits the selfie (named after the field), a
+                // synthetic `liveliness_images` entry that's a
+                // JSON-stringified array of frames and the session token,
+                // or only `liveness_skipped`. Mirrors buildSubmission.ts:87-96.
+                for (name, value) in livenessWireEntries(name: field.name, value: raw) {
+                    items.append(.init(field: name, value: value))
                 }
             case .file, .image:
                 // FileFieldValue stores `fileId` after upload. Pre-upload

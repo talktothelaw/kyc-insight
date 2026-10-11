@@ -15,8 +15,9 @@ enum SectionValidator {
     static func validate(field: WidgetField, value: AnyCodable?) -> String? {
         switch field.kind {
         case .liveness:
-            let selfie = value?.dictValue?["selfieImage"]?.stringValue ?? ""
-            if selfie.isEmpty && field.required {
+            let dict = value?.dictValue
+            let selfie = dict?["selfieImage"]?.stringValue ?? ""
+            if selfie.isEmpty && dict?["skipped"]?.boolValue != true && field.required {
                 return "Please complete the photo capture."
             }
             return nil

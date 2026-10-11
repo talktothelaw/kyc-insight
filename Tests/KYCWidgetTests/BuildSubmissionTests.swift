@@ -50,6 +50,30 @@ final class BuildSubmissionTests: XCTestCase {
         XCTAssertNotNil(byName["liveliness_images"], "expected synthetic liveliness_images entry")
     }
 
+    func test_topLevelSkippedLiveness_emitsOnlyTheSkipMarker() {
+        let field = livenessField(id: "f1", name: "selfieImage")
+        let sec = section(fields: [field])
+        let built = BuildSubmission.build(
+            processToken: "tok", step: step(sec), section: sec,
+            values: ["f1": .object(["skipped": .bool(true)])]
+        )
+        XCTAssertEqual(built.kycPayload.map(\.field), ["liveness_skipped"])
+        XCTAssertEqual(built.kycPayload.map(\.value), ["true"])
+    }
+
+    func test_topLevelLiveness_emitsTheSessionId() {
+        let field = livenessField(id: "f1", name: "selfieImage")
+        let sec = section(fields: [field])
+        var value = livenessValue().dictValue ?? [:]
+        value["livenessSessionId"] = .string("tok-1")
+        let built = BuildSubmission.build(
+            processToken: "tok", step: step(sec), section: sec,
+            values: ["f1": .object(value)]
+        )
+        XCTAssertEqual(built.kycPayload.map(\.field), ["selfieImage", "liveliness_images", "livenessSessionId"])
+        XCTAssertEqual(built.kycPayload.last?.value, "tok-1")
+    }
+
     func test_sysSelectWrappedLiveness_emitsSelfieAndLivelinessImagesWithLeafOptionalType() throws {
         let livenessOpt = SysSelectOption(
             providerId: "p_liveness", providerType: "liveness_check",

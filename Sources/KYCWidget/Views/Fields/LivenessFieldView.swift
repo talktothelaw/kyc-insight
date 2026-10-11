@@ -23,32 +23,56 @@ import AVFoundation
 struct LivenessFieldView: View {
     let field: WidgetField
     @ObservedObject var session: KYCWidgetSession
+    @StateObject private var flow: LivenessFlow
 
-    private enum Shell: Equatable {
-        case idle
-        case preparing      // creating session + asking camera
-        case running        // capture sheet showing
-        case submitting     // POST evidence in flight
-        case done(Verdict?) // verdict nil when evidence submission failed but
-                            // the inline value was committed anyway (non-blocking)
-        case error(String)
-    }
-
-    private struct Verdict: Equatable {
-        let status: String          // 'passed' | 'failed' | 'requires_manual_review' | …
-        let riskScore: Double?
-        let failureReason: String?
-    }
-
-    @State private var shell: Shell = .idle
-    @State private var session_: LivenessSessionDTO?
     @State private var capturedPreview: UIImage?
     @State private var retrySecondsRemaining: Int? = nil
-    /// Non-blocking warning surfaced in the done card when evidence submission
-    /// failed but we committed the inline value anyway (web's `shellError`
-    /// note inside the done state). Lets the legacy submission path keep the
-    /// user moving instead of hard-blocking on a network / rate-limit error.
-    @State private var submitNote: String? = nil
+
+    init(field: WidgetField, session: KYCWidgetSession) {
+        self.field = field
+        self.session = session
+        // face_match_nin: NINAuth requires EXACTLY 4 frames; inperson_nin:
+        // selfie-only (0) when the business config allows it.
+        let challengesPerSession: Int?
+        switch field.kycType {
+        case "face_match_nin": challengesPerSession = 4
+        case "inperson_score": challengesPerSession = 4
+        case "inperson_nin": challengesPerSession = 0
+        default: challengesPerSession = nil
+        }
+        let fieldID = field.id
+        _flow = StateObject(wrappedValue: LivenessFlow(
+            api: session.makeLivenessAPI(),
+            createInput: LivenessAPI.CreateInput(
+                userRef: session.config.userRef,
+                levelSlug: Self.levelSlug(step: session.currentStep, config: session.config),
+                deviceMeta: LivenessDeviceMetaInput(
+                    userAgent: "KYCWidget-iOS",
+                    platform: UIDevice.current.systemName + " " + UIDevice.current.systemVersion,
+                    cameraLabel: "front"
+                ),
+                challengesPerSession: challengesPerSession,
+                kycType: field.kycType
+            ),
+            commit: { [weak session] value in session?.setValue(value ?? .null, for: fieldID) },
+            onVerdict: { [weak session] result in
+                session?.dispatchLivenessSubmitted(
+                    sessionToken: result.sessionToken,
+                    status: result.status,
+                    riskScore: result.riskScore,
+                    failureReason: result.failureReason
+                )
+            }
+        ))
+    }
+
+    static func levelSlug(step: WidgetStep?, config: KYCWidgetConfig) -> String {
+        step?.slug ?? config.levelSlug
+    }
+
+    private var isSkipped: Bool {
+        session.values[field.id]?.dictValue?["skipped"]?.boolValue == true
+    }
 
     var body: some View {
         FieldShell(
@@ -57,9 +81,9 @@ struct LivenessFieldView: View {
             helper: nil,
             error: session.fieldErrors[field.id]
         ) {
-            switch shell {
+            switch flow.shell {
             case .idle:
-                idleCard
+                if isSkipped { skippedCard } else { idleCard }
             case .preparing:
                 statusCard(
                     icon: "arrow.triangle.2.circlepath",
@@ -81,94 +105,50 @@ struct LivenessFieldView: View {
                     title: "Submitting evidence…",
                     body: "Hold tight while we verify the captured frames."
                 )
-            case .done(let v):
-                doneCard(v)
+            case .done:
+                doneCard(flow.verdict)
             case .error(let msg):
                 errorCard(msg)
             }
         }
         .fullScreenCover(isPresented: Binding(
-            get: { shell == .running },
-            set: { open in if !open && shell == .running { shell = .idle } }
+            get: { flow.shell == .running },
+            set: { open in if !open && flow.shell == .running { flow.cancel() } }
         )) {
-            if let seq = session_?.challengeSequence {
+            if let seq = flow.session?.challengeSequence {
                 LivenessCaptureSheetV2(
                     challengeSequence: seq,
                     onComplete: { frames, selfie, progress in
                         capturedPreview = selfie
                         Task { await submit(frames: frames, selfie: selfie, progress: progress) }
                     },
-                    onCancel: { shell = .idle }
+                    onCancel: { flow.cancel() }
                 )
+            }
+        }
+        .task {
+            await flow.loadSettings(
+                levelSlug: Self.levelSlug(step: session.currentStep, config: session.config),
+                kycType: field.kycType,
+                currentValue: session.values[field.id]
+            )
+        }
+        .onChange(of: flow.shell) { shell in
+            // Surface the rate-limit countdown as a separate retry timer
+            // when the server replies with "Try again in Ns".
+            if case .error(let message) = shell, let seconds = parseRetrySeconds(message) {
+                startRetryCountdown(initial: seconds)
+            } else {
+                retrySecondsRemaining = nil
             }
         }
     }
 
     // ── action handlers ────────────────────────────────────────────────
 
-    private func startFlow() {
-        shell = .preparing
-        Task {
-            do {
-                let api = session.makeLivenessAPI()
-                // face_match_nin: NINAuth requires EXACTLY 4 frames; inperson_nin:
-                // selfie-only (0) when the business config allows it.
-                let challengesPerSession: Int?
-                switch field.kycType {
-                case "face_match_nin": challengesPerSession = 4
-                case "inperson_score": challengesPerSession = 4
-                case "inperson_nin": challengesPerSession = 0
-                default: challengesPerSession = nil
-                }
-                let input = LivenessAPI.CreateInput(
-                    userRef: session.config.userRef,
-                    levelSlug: session.config.levelSlug,
-                    deviceMeta: LivenessDeviceMetaInput(
-                        userAgent: "KYCWidget-iOS",
-                        platform: UIDevice.current.systemName + " " + UIDevice.current.systemVersion,
-                        cameraLabel: "front"
-                    ),
-                    challengesPerSession: challengesPerSession
-                )
-                let dto = try await api.createSession(input)
-                await MainActor.run {
-                    session_ = dto
-                    shell = .running
-                }
-            } catch let err as GraphQLClientError {
-                await MainActor.run { handleCreateError(err) }
-            } catch {
-                await MainActor.run { shell = .error(error.localizedDescription) }
-            }
-        }
-    }
-
-    private func handleCreateError(_ err: GraphQLClientError) {
-        switch err {
-        case .server(let message, _):
-            // Surface the rate-limit countdown as a separate retry timer
-            // when the server replies with "Try again in Ns".
-            if let seconds = parseRetrySeconds(message) {
-                startRetryCountdown(initial: seconds)
-                shell = .error(message)
-                return
-            }
-            shell = .error(message)
-        default:
-            shell = .error(err.errorDescription ?? "Liveness session could not be started.")
-        }
-    }
-
     private func submit(frames: [UIImage], selfie: UIImage, progress: [LivenessChallengeProgress]) async {
-        guard let dto = session_ else { return }
-        await MainActor.run {
-            shell = .submitting
-            submitNote = nil
-        }
-        let selfieB64 = selfie.jpegData(compressionQuality: 0.92)?.base64EncodedString() ?? ""
-        let frameB64 = frames.compactMap { $0.jpegData(compressionQuality: 0.85)?.base64EncodedString() }
-        let selfieDataURL = "data:image/jpeg;base64,\(selfieB64)"
-        let frameDataURLs = frameB64.map { "data:image/jpeg;base64,\($0)" }
+        let selfieDataURL = selfie.jpegData(compressionQuality: 0.92).map { "data:image/jpeg;base64,\($0.base64EncodedString())" }
+        let frameDataURLs = frames.compactMap { $0.jpegData(compressionQuality: 0.85).map { "data:image/jpeg;base64,\($0.base64EncodedString())" } }
         let isoFmt = ISO8601DateFormatter()
         let completed: [LivenessCompletedChallengeInput] = progress.map {
             LivenessCompletedChallengeInput(
@@ -178,67 +158,21 @@ struct LivenessFieldView: View {
                 durationMs: $0.durationMs
             )
         }
-
-        // Non-blocking submission — exactly like web `LivenessField.handleComplete`.
-        // If `submitEvidence` throws (network / rate-limit), we DO NOT block the
-        // user: we surface a warning note and still commit the inline value so
-        // the legacy section-submit path keeps them moving. Only on success do
-        // we capture the verdict + fire `onLivenessSubmitted` with the server's
-        // session token.
-        var verdict: Verdict?
-        var sessionId: String?
-        do {
-            let api = session.makeLivenessAPI()
-            let result = try await api.submitEvidence(LivenessAPI.SubmitInput(
-                sessionToken: dto.sessionToken,
-                selfieImage: selfieDataURL,
-                livelinessImages: frameDataURLs,
-                completedChallenges: completed
-            ))
-            verdict = Verdict(
-                status: result.status,
-                riskScore: result.riskScore,
-                failureReason: result.failureReason
-            )
-            sessionId = result.sessionToken
-            await MainActor.run {
-                session.dispatchLivenessSubmitted(
-                    sessionToken: result.sessionToken,
-                    status: result.status,
-                    riskScore: result.riskScore,
-                    failureReason: result.failureReason
-                )
-            }
-        } catch {
-            // Non-blocking: surface the warning but still commit the inline
-            // value so the legacy submission path keeps the user moving.
-            await MainActor.run {
-                submitNote = "Liveness session submission failed: \(error.localizedDescription). Continuing with inline submission."
-            }
-        }
-
-        // Snapshot into immutable copies for the final main-actor hop.
-        let finalVerdict = verdict
-        let finalSessionId = sessionId
-        await MainActor.run {
-            // Commit the value into the widget so section submit picks it up —
-            // committed in BOTH the success and failure paths (web parity).
-            var value: [String: AnyCodable] = [
-                "selfieImage":      .string(selfieDataURL),
-                "livelinessImages": .array(frameDataURLs.map { .string($0) }),
-            ]
-            if let finalSessionId { value["livenessSessionId"] = .string(finalSessionId) }
-            session.setValue(.object(value), for: field.id)
-            shell = .done(finalVerdict)
-        }
+        await flow.submit(selfie: selfieDataURL, frames: frameDataURLs, completed: completed)
     }
 
-    private func retake() {
-        session_ = nil
+    private func tryAgain() {
         capturedPreview = nil
-        shell = .idle
-        retrySecondsRemaining = nil
-        submitNote = nil
+        flow.tryAgain()
+    }
+
+    private func resubmit() {
+        Task { await flow.resubmit() }
+    }
+
+    private func backToIdle() {
+        capturedPreview = nil
+        flow.cancel()
     }
 
     // ── retry countdown ────────────────────────────────────────────────
@@ -282,26 +216,40 @@ struct LivenessFieldView: View {
             body: "We'll guide you through a few quick face actions. Make sure your face is well-lit and visible to the camera.",
             cta: "Start camera",
             ctaStyle: .primary,
-            action: startFlow
+            action: { flow.start() },
+            secondaryCta: flow.skipMode == "OPTIONAL" ? "Skip" : nil,
+            secondaryAction: flow.skip
+        )
+    }
+
+    private var skippedCard: some View {
+        introCard(
+            icon: "checkmark.circle.fill",
+            iconTint: .green,
+            title: "Liveness check not required",
+            body: "This step does not need a liveness check."
         )
     }
 
     @ViewBuilder
-    private func doneCard(_ v: Verdict?) -> some View {
+    private func doneCard(_ v: LivenessSessionDTO?) -> some View {
         // Verdict nil means we never got a backend response (submission failed
         // but the inline value was committed) — fall back to a neutral
         // "submitted" tone, exactly like web's `verdict?.status ?? 'submitted'`.
         let status = v?.status ?? "submitted"
         let isApproved = status == "passed"
         let isManualReview = status == "requires_manual_review"
-        let isFailed = status == "failed" || status == "expired"
+        let isFailed = flow.isNotAccepted
+        let outOfAttempts = flow.outOfAttempts
         let iconName: String = isApproved
             ? "checkmark.seal.fill"
             : isFailed
                 ? "exclamationmark.triangle.fill"
                 : "clock.fill"
         let iconTint: Color = isApproved ? .green : isFailed ? .red : .orange
-        let title: String = isApproved
+        let title: String = outOfAttempts
+            ? "No attempts left"
+            : isApproved
             ? "Identity verified"
             : isManualReview
                 ? "Submitted for review"
@@ -310,24 +258,26 @@ struct LivenessFieldView: View {
                     : "Liveness submitted"
         let scoreSuffix: String = (isApproved && v?.riskScore != nil)
             ? " (score \(Int(v!.riskScore!.rounded()))/100)" : ""
-        let body: String = isApproved
+        let body: String = outOfAttempts
+            ? "You have used all your attempts. Please contact the business that sent you this link."
+            : isApproved
             ? "Your liveness check was approved automatically\(scoreSuffix)."
             : isManualReview
                 ? "A reviewer will confirm your verification shortly. You don't need to do anything else."
                 : isFailed
-                    ? (v?.failureReason ?? "Please retake the check — make sure your face is well-lit and follow each prompt.")
+                    ? (v?.failureReason ?? "Please retake the check. Make sure your face is well lit and follow each prompt.")
                     : "Your selfie and challenge frames were captured."
-        let showRetake = isFailed
+        let canTryAgain = flow.canTryAgain
         introCard(
             icon: iconName,
             iconTint: iconTint,
             title: title,
             body: body,
             thumb: capturedPreview,
-            note: submitNote,
-            cta: showRetake ? "Try again" : nil,
+            cta: canTryAgain ? "Try again" : nil,
             ctaStyle: .primary,
-            action: showRetake ? retake : nil
+            action: canTryAgain ? tryAgain : nil,
+            ctaHint: canTryAgain ? flow.session.map { "Attempts left: \($0.retriesRemaining)" } : nil
         )
     }
 
@@ -343,7 +293,7 @@ struct LivenessFieldView: View {
             cta: "Try again",
             ctaStyle: .primary,
             ctaDisabled: isRateLimited,
-            action: retake
+            action: flow.canResubmit ? resubmit : (flow.verdict != nil ? tryAgain : backToIdle)
         )
     }
 
@@ -380,7 +330,10 @@ struct LivenessFieldView: View {
         cta: String? = nil,
         ctaStyle: CTAStyle = .primary,
         ctaDisabled: Bool = false,
-        action: (() -> Void)? = nil
+        action: (() -> Void)? = nil,
+        ctaHint: String? = nil,
+        secondaryCta: String? = nil,
+        secondaryAction: (() -> Void)? = nil
     ) -> some View {
         HStack(alignment: .top, spacing: 12) {
             Image(systemName: icon)
@@ -412,13 +365,28 @@ struct LivenessFieldView: View {
             }
             Spacer(minLength: 8)
             if let cta, let action {
-                Button(action: action) {
-                    Text(cta)
-                        .font(.system(size: 14, weight: .semibold))
-                        .padding(.horizontal, 14).padding(.vertical, 8)
+                VStack(spacing: 6) {
+                    Button(action: action) {
+                        Text(cta)
+                            .font(.system(size: 14, weight: .semibold))
+                            .padding(.horizontal, 14).padding(.vertical, 8)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(ctaDisabled)
+                    if let ctaHint {
+                        Text(ctaHint)
+                            .font(.system(size: 12))
+                            .foregroundColor(.secondary)
+                    }
+                    if let secondaryCta, let secondaryAction {
+                        Button(action: secondaryAction) {
+                            Text(secondaryCta)
+                                .font(.system(size: 14, weight: .semibold))
+                                .padding(.horizontal, 14).padding(.vertical, 8)
+                        }
+                        .buttonStyle(.bordered)
+                    }
                 }
-                .buttonStyle(.borderedProminent)
-                .disabled(ctaDisabled)
             }
         }
         .padding(14)
@@ -432,6 +400,158 @@ struct LivenessFieldView: View {
 
     private static func defaultStatusCard(title: String) -> some View {
         Text(title).font(.system(size: 13)).foregroundColor(.secondary)
+    }
+}
+
+@MainActor
+final class LivenessFlow: ObservableObject {
+    enum Shell: Equatable {
+        case idle
+        case preparing      // creating session + asking camera
+        case running        // capture sheet showing
+        case submitting     // POST evidence in flight
+        case done
+        case error(String)
+    }
+
+    static let acceptedStatuses: Set<String> = ["passed", "requires_manual_review"]
+
+    @Published private(set) var shell: Shell = .idle
+    @Published private(set) var session: LivenessSessionDTO?
+    @Published private(set) var verdict: LivenessSessionDTO?
+    @Published private(set) var skipMode = "NONE"
+    @Published private var pendingEvidence: LivenessAPI.SubmitInput?
+
+    private let api: LivenessAPI
+    private let createInput: LivenessAPI.CreateInput
+    private let commit: (AnyCodable?) -> Void
+    private let onVerdict: (LivenessSessionDTO) -> Void
+
+    init(
+        api: LivenessAPI,
+        createInput: LivenessAPI.CreateInput,
+        commit: @escaping (AnyCodable?) -> Void,
+        onVerdict: @escaping (LivenessSessionDTO) -> Void = { _ in }
+    ) {
+        self.api = api
+        self.createInput = createInput
+        self.commit = commit
+        self.onVerdict = onVerdict
+    }
+
+    var isNotAccepted: Bool { verdict.map { !Self.acceptedStatuses.contains($0.status) } ?? false }
+    var outOfAttempts: Bool { isNotAccepted && session?.retriesRemaining == 0 }
+    var canTryAgain: Bool { isNotAccepted && !outOfAttempts }
+    var canResubmit: Bool { pendingEvidence != nil && session.map { !Self.isExpired($0) } == true }
+
+    func loadSettings(levelSlug: String?, kycType: String?, currentValue: AnyCodable? = nil) async {
+        skipMode = (try? await api.clientSettings(levelSlug: levelSlug, kycType: kycType))?.skipMode ?? "NONE"
+        if skipMode == "AUTO" && shell == .idle && session == nil && (currentValue ?? .null) == .null { skip() }
+    }
+
+    func skip() {
+        commit(.object(["skipped": .bool(true)]))
+    }
+
+    func cancel() {
+        shell = .idle
+    }
+
+    @discardableResult
+    func start() -> Task<Void, Never> {
+        verdict = nil
+        pendingEvidence = nil
+        shell = .preparing
+        return Task {
+            do {
+                if session.map(Self.isExpired) ?? true {
+                    session = try await api.createSession(createInput)
+                }
+                shell = .running
+            } catch {
+                shell = .error(error.localizedDescription)
+            }
+        }
+    }
+
+    func submit(selfie: String?, frames: [String], completed: [LivenessCompletedChallengeInput]) async {
+        guard let active = session else { return }
+        guard let selfie else {
+            shell = .error("The captured photo could not be processed. Please try again.")
+            return
+        }
+        await submitEvidence(LivenessAPI.SubmitInput(
+            sessionToken: active.sessionToken,
+            selfieImage: selfie,
+            livelinessImages: frames,
+            completedChallenges: completed
+        ))
+    }
+
+    func resubmit() async {
+        guard let pendingEvidence else { return }
+        await submitEvidence(pendingEvidence)
+    }
+
+    private func submitEvidence(_ input: LivenessAPI.SubmitInput) async {
+        shell = .submitting
+        let result: LivenessSessionDTO
+        do {
+            result = try await api.submitEvidence(input)
+        } catch {
+            let message = error.localizedDescription
+            guard message.range(of: "not in a submittable state", options: .caseInsensitive) != nil,
+                  let recovered = try? await api.getSession(token: input.sessionToken) else {
+                pendingEvidence = input
+                shell = .error(message)
+                return
+            }
+            result = recovered
+        }
+        pendingEvidence = nil
+        session = result
+        verdict = result
+        commit(Self.acceptedStatuses.contains(result.status) ? .object([
+            "selfieImage": .string(input.selfieImage ?? ""),
+            "livelinessImages": .array(input.livelinessImages.map { .string($0) }),
+            "livenessSessionId": .string(input.sessionToken),
+        ]) : nil)
+        shell = .done
+        onVerdict(result)
+    }
+
+    @discardableResult
+    func tryAgain() -> Task<Void, Never> {
+        guard let active = session, !Self.isExpired(active) else { return start() }
+        guard active.retriesRemaining > 0 else {
+            shell = .done
+            return Task {}
+        }
+        shell = .preparing
+        return Task {
+            do {
+                session = try await api.retrySession(token: active.sessionToken)
+                verdict = nil
+                shell = .running
+            } catch {
+                let message = error.localizedDescription
+                if message.range(of: "Retry limit exceeded|already complete", options: [.regularExpression, .caseInsensitive]) != nil {
+                    session?.retriesRemaining = 0
+                    shell = .done
+                } else {
+                    shell = .error(message)
+                }
+            }
+        }
+    }
+
+    private static func isExpired(_ session: LivenessSessionDTO) -> Bool {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        guard let expiry = formatter.date(from: session.expiresAt) ?? ISO8601DateFormatter().date(from: session.expiresAt) else {
+            return false
+        }
+        return expiry < Date()
     }
 }
 

@@ -46,6 +46,7 @@ public struct LivenessSessionDTO: Decodable, Sendable {
     public let riskScore: Double?
     public let expiresAt: String
     public let failureReason: String?
+    public internal(set) var retriesRemaining: Int
 
     public struct Completed: Decodable, Sendable {
         public let code: String
@@ -53,6 +54,33 @@ public struct LivenessSessionDTO: Decodable, Sendable {
         public let clientPassed: Bool
         public let durationMs: Int?
     }
+}
+
+extension LivenessSessionDTO {
+    private enum CodingKeys: String, CodingKey {
+        case id, sessionToken, status, challengeSequence, completedChallenges, retryCount, riskScore,
+             expiresAt, failureReason, retriesRemaining
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        sessionToken = try c.decode(String.self, forKey: .sessionToken)
+        status = try c.decode(String.self, forKey: .status)
+        challengeSequence = try c.decode([String].self, forKey: .challengeSequence)
+        completedChallenges = try c.decode([Completed].self, forKey: .completedChallenges)
+        retryCount = try c.decode(Int.self, forKey: .retryCount)
+        riskScore = try c.decodeIfPresent(Double.self, forKey: .riskScore)
+        expiresAt = try c.decode(String.self, forKey: .expiresAt)
+        failureReason = try c.decodeIfPresent(String.self, forKey: .failureReason)
+        retriesRemaining = try c.decodeIfPresent(Int.self, forKey: .retriesRemaining) ?? 0
+    }
+}
+
+public struct LivenessClientSettings: Decodable, Sendable {
+    public let skipMode: String
+    public let requireVideo: Bool
+    public let maxRetries: Int
 }
 
 @MainActor
@@ -72,6 +100,7 @@ public final class LivenessAPI {
       riskScore
       expiresAt
       failureReason
+      retriesRemaining
     """
 
     public struct CreateInput: Sendable {
@@ -84,6 +113,7 @@ public final class LivenessAPI {
         public let providerId: String?
         public let deviceMeta: LivenessDeviceMetaInput?
         public let challengesPerSession: Int?
+        public let kycType: String?
 
         public init(
             userRef: String? = nil,
@@ -94,7 +124,8 @@ public final class LivenessAPI {
             requirementId: String? = nil,
             providerId: String? = nil,
             deviceMeta: LivenessDeviceMetaInput? = nil,
-            challengesPerSession: Int? = nil
+            challengesPerSession: Int? = nil,
+            kycType: String? = nil
         ) {
             self.userRef = userRef
             self.customerId = customerId
@@ -105,6 +136,7 @@ public final class LivenessAPI {
             self.providerId = providerId
             self.deviceMeta = deviceMeta
             self.challengesPerSession = challengesPerSession
+            self.kycType = kycType
         }
     }
 
@@ -123,6 +155,7 @@ public final class LivenessAPI {
         if let v = input.requirementId      { inputDict["requirementId"] = v }
         if let v = input.providerId         { inputDict["providerId"] = v }
         if let v = input.challengesPerSession { inputDict["challengesPerSession"] = v }
+        if let v = input.kycType            { inputDict["kycType"] = v }
         if let v = input.deviceMeta {
             var meta: [String: Any] = [:]
             if let s = v.userAgent   { meta["userAgent"] = s }
@@ -204,6 +237,23 @@ public final class LivenessAPI {
             variables: ["sessionToken": token],
             rootField: "retryLivenessSession",
             as: LivenessSessionDTO.self
+        )
+    }
+
+    public func clientSettings(levelSlug: String?, kycType: String?) async throws -> LivenessClientSettings {
+        let query = """
+        query LivenessClientSettings($levelSlug: String, $kycType: String) {
+          livenessClientSettings(levelSlug: $levelSlug, kycType: $kycType) { skipMode requireVideo maxRetries }
+        }
+        """
+        var variables: [String: Any] = [:]
+        if let levelSlug { variables["levelSlug"] = levelSlug }
+        if let kycType { variables["kycType"] = kycType }
+        return try await client.execute(
+            query: query,
+            variables: variables,
+            rootField: "livenessClientSettings",
+            as: LivenessClientSettings.self
         )
     }
 

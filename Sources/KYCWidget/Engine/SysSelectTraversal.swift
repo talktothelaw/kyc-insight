@@ -134,21 +134,11 @@ enum SysSelectTraversal {
                 cacId = k
                 continue
             }
-            // Liveness value — lower to the SAME two wire entries as the
-            // top-level liveness branch: selfie (named after the field) +
-            // synthetic liveliness_images. Stringified-whole → backend 107.
+            // Liveness value — lower to the SAME wire entries as the
+            // top-level liveness branch. Stringified-whole → backend 107.
             if let dict = value.dictValue,
-               dict["livelinessImages"] != nil || dict["selfieImage"] != nil {
-                let selfie = dict["selfieImage"]?.stringValue
-                    ?? dict["fileId"]?.stringValue ?? ""
-                entries.append((name, .string(selfie)))
-                if let frames = dict["livelinessImages"]?.arrayValue {
-                    let arr = frames.compactMap { $0.stringValue }
-                    if let data = try? JSONSerialization.data(withJSONObject: arr),
-                       let json = String(data: data, encoding: .utf8) {
-                        entries.append(("liveliness_images", .string(json)))
-                    }
-                }
+               dict["livelinessImages"] != nil || dict["selfieImage"] != nil || dict["skipped"]?.boolValue == true {
+                entries.append(contentsOf: livenessWireEntries(name: name, value: value).map { ($0.0, .string($0.1)) })
                 continue
             }
             // Uploaded file/image value — wire shape is the bare fileId

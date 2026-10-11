@@ -202,7 +202,8 @@ final class SysSelectTraversalTests: XCTestCase {
         ]
         let flat = SysSelectTraversal.flattenSysSelect(composite)
         XCTAssertEqual(flat.leafType, "liveness_check")
-        XCTAssertEqual(flat.entries.count, 2)
+        XCTAssertEqual(flat.entries.map(\.name), ["selfieImage", "liveliness_images", "livenessSessionId"])
+        XCTAssertEqual(flat.entries.last?.value.stringValue, "sess-1")
         let selfie = flat.entries.first { $0.name == "selfieImage" }
         XCTAssertEqual(selfie?.value.stringValue, "data:image/jpeg;base64,SELFIE")
         let frames = flat.entries.first { $0.name == "liveliness_images" }
@@ -210,6 +211,16 @@ final class SysSelectTraversalTests: XCTestCase {
         // JSONSerialization may escape '/' — decode to compare contents.
         let decoded = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String])
         XCTAssertEqual(decoded, ["data:image/jpeg;base64,F1", "data:image/jpeg;base64,F2"])
+    }
+
+    func test_flattenSysSelect_lowersNestedSkippedLivenessToTheSkipMarker() {
+        let composite: [String: AnyCodable] = [
+            "selectedType": .string("liveness_check"),
+            "values": .object(["selfieImage": .object(["skipped": .bool(true)])]),
+        ]
+        let flat = SysSelectTraversal.flattenSysSelect(composite)
+        XCTAssertEqual(flat.entries.map(\.name), ["liveness_skipped"])
+        XCTAssertEqual(flat.entries.first?.value.stringValue, "true")
     }
 
     func test_flattenSysSelect_lowersLivenessInsideDeepNestedChain() {
