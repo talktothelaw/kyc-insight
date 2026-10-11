@@ -40,8 +40,9 @@ final class LivenessCaptureCoordinator: ObservableObject, LivenessStateDelegate 
     /// Fired exactly once when the sequence is complete and the selfie
     /// has been captured. The caller (LivenessFieldView) hands off to
     /// `submitLivenessEvidence` from here.
-    var onComplete: (([UIImage], UIImage, [LivenessChallengeProgress]) -> Void)?
+    var onComplete: (([UIImage], UIImage, [LivenessChallengeProgress], RecordedClip?) -> Void)?
     var onCancel: (() -> Void)?
+    var recordVideo = false
 
     // ── internals ──────────────────────────────────────────────────────
     let camera = LivenessCameraSession()
@@ -51,6 +52,8 @@ final class LivenessCaptureCoordinator: ObservableObject, LivenessStateDelegate 
     private var lastFrame: UIImage?
     private var lastSignals: FaceFrameSignals = .empty
     private var readyCountdownTask: Task<Void, Never>?
+    private var clipWriter: ClipWriter?
+    private var finishTask: Task<Void, Never>?
     private static let readyCountdownSeconds = 3
 
     init() {
@@ -62,7 +65,12 @@ final class LivenessCaptureCoordinator: ObservableObject, LivenessStateDelegate 
         totalChallenges = sequence.count
         instruction = "Loading camera…"
         machine.enterLoading()
+        let writer = recordVideo
+            ? ClipWriter(url: FileManager.default.temporaryDirectory.appendingPathComponent("liveness-\(UUID().uuidString).mp4"))
+            : nil
+        clipWriter = writer
         camera.onSample = { [weak self] buffer in
+            writer?.append(buffer)
             // Hop off the camera queue so the detector + state machine
             // mutate state on the main actor.
             guard let self else { return }
@@ -126,9 +134,15 @@ final class LivenessCaptureCoordinator: ObservableObject, LivenessStateDelegate 
     func stop() {
         readyCountdownTask?.cancel()
         readyCountdownTask = nil
+        finishTask?.cancel()
+        finishTask = nil
         voice.cancel()
         camera.onSample = nil
         camera.stop()
+        if let writer = clipWriter {
+            clipWriter = nil
+            Task { await Self.discard(writer.finish()) }
+        }
     }
 
     /// User-cancelled — caller dismisses the sheet.
@@ -175,6 +189,7 @@ final class LivenessCaptureCoordinator: ObservableObject, LivenessStateDelegate 
                 ?? "Get ready for the next challenge"
             instruction = "Get ready — \(copy)"
             voice.speak(copy)
+            clipWriter?.arm()
             startReadyCountdown()
         case .challengeFor(let code):
             currentChallenge = code
@@ -214,8 +229,25 @@ final class LivenessCaptureCoordinator: ObservableObject, LivenessStateDelegate 
         let progress = machine.completed
         camera.onSample = nil
         camera.stop()
-        // Hand back the captured frames and the selfie to the field view.
-        onComplete?(capturedFrames, selfie, progress)
+        guard let writer = clipWriter else {
+            // Hand back the captured frames and the selfie to the field view.
+            onComplete?(capturedFrames, selfie, progress, nil)
+            return
+        }
+        clipWriter = nil
+        let frames = capturedFrames
+        finishTask = Task {
+            let clip = await writer.finish()
+            guard !Task.isCancelled else {
+                Self.discard(clip)
+                return
+            }
+            onComplete?(frames, selfie, progress, clip)
+        }
+    }
+
+    private static func discard(_ clip: RecordedClip?) {
+        if let clip { try? FileManager.default.removeItem(at: clip.url) }
     }
 }
 #endif

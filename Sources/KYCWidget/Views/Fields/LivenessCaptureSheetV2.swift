@@ -15,7 +15,8 @@ import AVFoundation
 @available(iOS 15.0, *)
 struct LivenessCaptureSheetV2: View {
     let challengeSequence: [String]
-    let onComplete: ([UIImage], UIImage, [LivenessChallengeProgress]) -> Void
+    let recordVideo: Bool
+    let onComplete: ([UIImage], UIImage, [LivenessChallengeProgress], RecordedClip?) -> Void
     let onCancel: () -> Void
 
     @StateObject private var coordinator = LivenessCaptureCoordinator()
@@ -63,6 +64,7 @@ struct LivenessCaptureSheetV2: View {
         .onAppear {
             guard !didStart else { return }
             didStart = true
+            coordinator.recordVideo = recordVideo
             coordinator.onComplete = onComplete
             coordinator.onCancel = onCancel
             coordinator.start(sequence: challengeSequence)
@@ -84,21 +86,23 @@ struct LivenessCaptureSheetV2: View {
             // Flip camera — front ↔ back. Most users will stay on the front
             // camera; this is a fallback for the rare case where front-cam
             // hardware is broken or unavailable on the device.
-            Button {
-                coordinator.flipCamera()
-            } label: {
-                Image(systemName: coordinator.isUsingBackCamera
-                      ? "camera.rotate.fill"
-                      : "camera.rotate")
-                    .foregroundColor(.white)
-                    .font(.system(size: 14, weight: .semibold))
-                    .frame(width: 36, height: 36)
-                    .background(Color.black.opacity(0.55))
-                    .clipShape(Circle())
+            if !recordVideo {
+                Button {
+                    coordinator.flipCamera()
+                } label: {
+                    Image(systemName: coordinator.isUsingBackCamera
+                          ? "camera.rotate.fill"
+                          : "camera.rotate")
+                        .foregroundColor(.white)
+                        .font(.system(size: 14, weight: .semibold))
+                        .frame(width: 36, height: 36)
+                        .background(Color.black.opacity(0.55))
+                        .clipShape(Circle())
+                }
+                .accessibilityLabel(coordinator.isUsingBackCamera
+                    ? "Switch to front camera"
+                    : "Switch to back camera")
             }
-            .accessibilityLabel(coordinator.isUsingBackCamera
-                ? "Switch to front camera"
-                : "Switch to back camera")
             Button {
                 coordinator.cancel()
             } label: {

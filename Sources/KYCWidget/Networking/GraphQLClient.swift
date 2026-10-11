@@ -54,6 +54,7 @@ public final class GraphQLClient {
     public let endpoint: URL
     public let publicKey: String
     private let session: URLSession
+    var urlSession: URLSession { session }
 
     /// Verbose logging toggle. Defaults to `true` in `DEBUG` builds, off in
     /// release. Logs go through `os.Logger` (subsystem `com.kycinsight.widget`,

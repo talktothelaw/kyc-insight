@@ -118,9 +118,10 @@ struct LivenessFieldView: View {
             if let seq = flow.session?.challengeSequence {
                 LivenessCaptureSheetV2(
                     challengeSequence: seq,
-                    onComplete: { frames, selfie, progress in
+                    recordVideo: flow.session?.requireVideo == true,
+                    onComplete: { frames, selfie, progress, clip in
                         capturedPreview = selfie
-                        Task { await submit(frames: frames, selfie: selfie, progress: progress) }
+                        Task { await submit(frames: frames, selfie: selfie, progress: progress, clip: clip) }
                     },
                     onCancel: { flow.cancel() }
                 )
@@ -146,7 +147,7 @@ struct LivenessFieldView: View {
 
     // ── action handlers ────────────────────────────────────────────────
 
-    private func submit(frames: [UIImage], selfie: UIImage, progress: [LivenessChallengeProgress]) async {
+    private func submit(frames: [UIImage], selfie: UIImage, progress: [LivenessChallengeProgress], clip: RecordedClip?) async {
         let selfieDataURL = selfie.jpegData(compressionQuality: 0.92).map { "data:image/jpeg;base64,\($0.base64EncodedString())" }
         let frameDataURLs = frames.compactMap { $0.jpegData(compressionQuality: 0.85).map { "data:image/jpeg;base64,\($0.base64EncodedString())" } }
         let isoFmt = ISO8601DateFormatter()
@@ -158,7 +159,7 @@ struct LivenessFieldView: View {
                 durationMs: $0.durationMs
             )
         }
-        await flow.submit(selfie: selfieDataURL, frames: frameDataURLs, completed: completed)
+        await flow.submit(selfie: selfieDataURL, frames: frameDataURLs, completed: completed, clip: clip)
     }
 
     private func tryAgain() {
@@ -421,6 +422,10 @@ final class LivenessFlow: ObservableObject {
     @Published private(set) var verdict: LivenessSessionDTO?
     @Published private(set) var skipMode = "NONE"
     @Published private var pendingEvidence: LivenessAPI.SubmitInput?
+    @Published private var pendingClip: RecordedClip?
+
+    static let videoUploadFailed = "Video upload failed. Please try again."
+    static let cannotRecord = "This device cannot record the liveness video."
 
     private let api: LivenessAPI
     private let createInput: LivenessAPI.CreateInput
@@ -461,6 +466,7 @@ final class LivenessFlow: ObservableObject {
     func start() -> Task<Void, Never> {
         verdict = nil
         pendingEvidence = nil
+        discardClip()
         shell = .preparing
         return Task {
             do {
@@ -474,7 +480,7 @@ final class LivenessFlow: ObservableObject {
         }
     }
 
-    func submit(selfie: String?, frames: [String], completed: [LivenessCompletedChallengeInput]) async {
+    func submit(selfie: String?, frames: [String], completed: [LivenessCompletedChallengeInput], clip: RecordedClip? = nil) async {
         guard let active = session else { return }
         guard let selfie else {
             shell = .error("The captured photo could not be processed. Please try again.")
@@ -485,16 +491,33 @@ final class LivenessFlow: ObservableObject {
             selfieImage: selfie,
             livelinessImages: frames,
             completedChallenges: completed
-        ))
+        ), clip: clip)
     }
 
     func resubmit() async {
         guard let pendingEvidence else { return }
-        await submitEvidence(pendingEvidence)
+        await submitEvidence(pendingEvidence, clip: pendingClip)
     }
 
-    private func submitEvidence(_ input: LivenessAPI.SubmitInput) async {
+    private func submitEvidence(_ input: LivenessAPI.SubmitInput, clip: RecordedClip?) async {
         shell = .submitting
+        if session?.requireVideo == true {
+            guard let clip else {
+                pendingEvidence = nil
+                discardClip()
+                shell = .error(Self.cannotRecord)
+                return
+            }
+            do {
+                let upload = try await api.requestVideoUpload(token: input.sessionToken, contentType: clip.contentType, sizeBytes: clip.sizeBytes)
+                try await api.uploadVideo(upload, clip: clip)
+            } catch {
+                pendingEvidence = input
+                pendingClip = clip
+                shell = .error(Self.videoUploadFailed)
+                return
+            }
+        }
         let result: LivenessSessionDTO
         do {
             result = try await api.submitEvidence(input)
@@ -503,12 +526,15 @@ final class LivenessFlow: ObservableObject {
             guard message.range(of: "not in a submittable state", options: .caseInsensitive) != nil,
                   let recovered = try? await api.getSession(token: input.sessionToken) else {
                 pendingEvidence = input
+                pendingClip = clip
                 shell = .error(message)
                 return
             }
             result = recovered
         }
         pendingEvidence = nil
+        pendingClip = nil
+        if let clip { try? FileManager.default.removeItem(at: clip.url) }
         session = result
         verdict = result
         commit(Self.acceptedStatuses.contains(result.status) ? .object([
@@ -522,6 +548,7 @@ final class LivenessFlow: ObservableObject {
 
     @discardableResult
     func tryAgain() -> Task<Void, Never> {
+        discardClip()
         guard let active = session, !Self.isExpired(active) else { return start() }
         guard active.retriesRemaining > 0 else {
             shell = .done
@@ -543,6 +570,11 @@ final class LivenessFlow: ObservableObject {
                 }
             }
         }
+    }
+
+    private func discardClip() {
+        if let pendingClip { try? FileManager.default.removeItem(at: pendingClip.url) }
+        pendingClip = nil
     }
 
     private static func isExpired(_ session: LivenessSessionDTO) -> Bool {

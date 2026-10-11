@@ -47,6 +47,7 @@ public struct LivenessSessionDTO: Decodable, Sendable {
     public let expiresAt: String
     public let failureReason: String?
     public internal(set) var retriesRemaining: Int
+    public internal(set) var requireVideo: Bool
 
     public struct Completed: Decodable, Sendable {
         public let code: String
@@ -59,7 +60,7 @@ public struct LivenessSessionDTO: Decodable, Sendable {
 extension LivenessSessionDTO {
     private enum CodingKeys: String, CodingKey {
         case id, sessionToken, status, challengeSequence, completedChallenges, retryCount, riskScore,
-             expiresAt, failureReason, retriesRemaining
+             expiresAt, failureReason, retriesRemaining, requireVideo
     }
 
     public init(from decoder: Decoder) throws {
@@ -74,6 +75,7 @@ extension LivenessSessionDTO {
         expiresAt = try c.decode(String.self, forKey: .expiresAt)
         failureReason = try c.decodeIfPresent(String.self, forKey: .failureReason)
         retriesRemaining = try c.decodeIfPresent(Int.self, forKey: .retriesRemaining) ?? 0
+        requireVideo = try c.decodeIfPresent(Bool.self, forKey: .requireVideo) ?? false
     }
 }
 
@@ -81,6 +83,18 @@ public struct LivenessClientSettings: Decodable, Sendable {
     public let skipMode: String
     public let requireVideo: Bool
     public let maxRetries: Int
+}
+
+public struct RecordedClip: Sendable, Equatable {
+    public let url: URL
+    public let contentType: String
+    public var sizeBytes: Int {
+        ((try? FileManager.default.attributesOfItem(atPath: url.path)[.size]) as? NSNumber)?.intValue ?? 0
+    }
+    public init(url: URL, contentType: String) {
+        self.url = url
+        self.contentType = contentType
+    }
 }
 
 @MainActor
@@ -101,6 +115,7 @@ public final class LivenessAPI {
       expiresAt
       failureReason
       retriesRemaining
+      requireVideo
     """
 
     public struct CreateInput: Sendable {
@@ -269,5 +284,42 @@ public final class LivenessAPI {
             rootField: "livenessSession",
             as: LivenessSessionDTO.self
         )
+    }
+
+    public struct VideoUploadHeader: Decodable, Sendable { public let name: String; public let value: String }
+    public struct VideoUpload: Decodable, Sendable {
+        public let uploadUrl: String
+        public let headers: [VideoUploadHeader]
+        public let expiresAt: String
+    }
+
+    public func requestVideoUpload(token: String, contentType: String, sizeBytes: Int) async throws -> VideoUpload {
+        let mutation = """
+        mutation RequestLivenessVideoUpload($sessionToken: String!, $contentType: String!, $sizeBytes: Int!) {
+          requestLivenessVideoUpload(sessionToken: $sessionToken, contentType: $contentType, sizeBytes: $sizeBytes) {
+            uploadUrl
+            headers { name value }
+            expiresAt
+          }
+        }
+        """
+        return try await client.execute(
+            query: mutation,
+            variables: ["sessionToken": token, "contentType": contentType, "sizeBytes": sizeBytes],
+            rootField: "requestLivenessVideoUpload",
+            as: VideoUpload.self
+        )
+    }
+
+    public func uploadVideo(_ upload: VideoUpload, clip: RecordedClip) async throws {
+        guard let url = URL(string: upload.uploadUrl) else { throw URLError(.badURL) }
+        var request = URLRequest(url: url)
+        request.httpMethod = "PUT"
+        upload.headers.forEach { request.setValue($0.value, forHTTPHeaderField: $0.name) }
+        request.httpBody = try Data(contentsOf: clip.url)
+        let (_, response) = try await client.urlSession.data(for: request)
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            throw URLError(.badServerResponse)
+        }
     }
 }

@@ -8,7 +8,9 @@ final class LivenessFlowTests: XCTestCase {
     final class RoutingStub: URLProtocol, @unchecked Sendable {
         static var responses: [String: [String: Any]] = [:]
         static var calls: [(root: String, variables: [String: Any])] = []
-        static let roots = ["livenessClientSettings", "createLivenessSession", "submitLivenessEvidence", "retryLivenessSession", "livenessSession"]
+        static let roots = ["livenessClientSettings", "createLivenessSession", "submitLivenessEvidence", "retryLivenessSession", "requestLivenessVideoUpload", "livenessSession"]
+        static var puts: [(path: String, contentType: String?, size: Int)] = []
+        static var putStatus = 200
 
         override class func canInit(with request: URLRequest) -> Bool { true }
         override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
@@ -23,6 +25,13 @@ final class LivenessFlowTests: XCTestCase {
                     data.append(buf, count: read)
                 }
                 stream.close()
+            }
+            if request.httpMethod == "PUT" {
+                Self.puts.append((request.url?.path ?? "", request.value(forHTTPHeaderField: "Content-Type"), data.count))
+                let put = HTTPURLResponse(url: request.url!, statusCode: Self.putStatus, httpVersion: "HTTP/1.1", headerFields: [:])!
+                client?.urlProtocol(self, didReceive: put, cacheStoragePolicy: .notAllowed)
+                client?.urlProtocolDidFinishLoading(self)
+                return
             }
             let body = (try? JSONSerialization.jsonObject(with: data) as? [String: Any]) ?? [:]
             let query = body["query"] as? String ?? ""
@@ -44,6 +53,8 @@ final class LivenessFlowTests: XCTestCase {
         super.setUp()
         RoutingStub.responses = [:]
         RoutingStub.calls = []
+        RoutingStub.puts = []
+        RoutingStub.putStatus = 200
         committed = []
     }
 
@@ -64,7 +75,7 @@ final class LivenessFlowTests: XCTestCase {
     }
 
     private func dto(token: String = "tok-1", status: String = "pending", retriesRemaining: Int = 2,
-                     expiresAt: String = "2099-01-01T00:00:00.000Z") -> [String: Any] {
+                     expiresAt: String = "2099-01-01T00:00:00.000Z", requireVideo: Bool = false) -> [String: Any] {
         [
             "id": "id-\(token)",
             "sessionToken": token,
@@ -76,6 +87,7 @@ final class LivenessFlowTests: XCTestCase {
             "expiresAt": expiresAt,
             "failureReason": NSNull(),
             "retriesRemaining": retriesRemaining,
+            "requireVideo": requireVideo,
         ]
     }
 
@@ -103,6 +115,86 @@ final class LivenessFlowTests: XCTestCase {
     private func runToVerdict(_ flow: LivenessFlow) async {
         await flow.start().value
         await flow.submit(selfie: "s", frames: ["f"], completed: [])
+    }
+
+    private func clip() throws -> RecordedClip {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".mp4")
+        try Data(repeating: 7, count: 64).write(to: url)
+        return RecordedClip(url: url, contentType: "video/mp4")
+    }
+
+    private func respondUpload() {
+        respond("requestLivenessVideoUpload", [
+            "uploadUrl": "https://s3.example/put",
+            "headers": [["name": "Content-Type", "value": "video/mp4"]],
+            "expiresAt": "2999-01-01T00:00:00.000Z",
+        ])
+    }
+
+    func testVideoSessionUploadsTheClipBeforeSubmitting() async throws {
+        respond("createLivenessSession", dto(token: "t1", requireVideo: true))
+        respondUpload()
+        respond("submitLivenessEvidence", dto(token: "t1", status: "passed", requireVideo: true))
+        let flow = makeFlow()
+        await flow.start().value
+        let recorded = try clip()
+        await flow.submit(selfie: "s", frames: ["f"], completed: [], clip: recorded)
+        XCTAssertEqual(RoutingStub.puts.count, 1)
+        XCTAssertEqual(RoutingStub.puts.first?.contentType, "video/mp4")
+        XCTAssertEqual(RoutingStub.puts.first?.size, 64)
+        XCTAssertEqual(RoutingStub.calls.first { $0.root == "requestLivenessVideoUpload" }?.variables["sizeBytes"] as? Int, 64)
+        XCTAssertEqual(flow.shell, .done)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: recorded.url.path))
+    }
+
+    func testFailedUploadThenResubmitReuploadsWithoutRetry() async throws {
+        respond("createLivenessSession", dto(token: "t1", requireVideo: true))
+        respondUpload()
+        RoutingStub.putStatus = 500
+        let flow = makeFlow()
+        await flow.start().value
+        await flow.submit(selfie: "s", frames: ["f"], completed: [], clip: try clip())
+        XCTAssertEqual(flow.shell, .error("Video upload failed. Please try again."))
+        XCTAssertTrue(flow.canResubmit)
+        RoutingStub.putStatus = 200
+        respond("submitLivenessEvidence", dto(token: "t1", status: "passed", requireVideo: true))
+        await flow.resubmit()
+        XCTAssertEqual(flow.shell, .done)
+        XCTAssertEqual(RoutingStub.puts.count, 2)
+        XCTAssertEqual(count("retryLivenessSession"), 0)
+    }
+
+    func testStartingOverAfterAFailedUploadDeletesTheKeptClip() async throws {
+        respond("createLivenessSession", dto(token: "t1", requireVideo: true))
+        respondUpload()
+        RoutingStub.putStatus = 500
+        let flow = makeFlow()
+        await flow.start().value
+        let recorded = try clip()
+        await flow.submit(selfie: "s", frames: ["f"], completed: [], clip: recorded)
+        XCTAssertEqual(flow.shell, .error("Video upload failed. Please try again."))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: recorded.url.path))
+        await flow.start().value
+        XCTAssertFalse(FileManager.default.fileExists(atPath: recorded.url.path))
+    }
+
+    func testVideoSessionWithoutAClipSaysTheDeviceCannotRecord() async {
+        respond("createLivenessSession", dto(token: "t1", requireVideo: true))
+        let flow = makeFlow()
+        await flow.start().value
+        await flow.submit(selfie: "s", frames: ["f"], completed: [], clip: nil)
+        XCTAssertEqual(flow.shell, .error("This device cannot record the liveness video."))
+        XCTAssertFalse(flow.canResubmit)
+    }
+
+    func testNonVideoSessionNeverUploads() async throws {
+        respond("createLivenessSession", dto(token: "t1"))
+        respond("submitLivenessEvidence", dto(token: "t1", status: "passed"))
+        let flow = makeFlow()
+        await flow.start().value
+        await flow.submit(selfie: "s", frames: ["f"], completed: [], clip: try clip())
+        XCTAssertEqual(RoutingStub.puts.count, 0)
+        XCTAssertEqual(count("requestLivenessVideoUpload"), 0)
     }
 
     func test_autoSkipsWithoutCreatingASession() async {
