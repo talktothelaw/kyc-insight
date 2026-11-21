@@ -107,7 +107,8 @@ final class LivenessAPITests: XCTestCase {
             levelSlug: "tier_1",
             deviceMeta: LivenessDeviceMetaInput(userAgent: "iOS-Test", platform: "iOS-17", cameraLabel: nil),
             challengesPerSession: 3,
-            kycType: "face_match_nin"
+            kycType: "face_match_nin",
+            processToken: "pt_001"
         ))
         // — request inspection —
         let body = try XCTUnwrap(StubURLProtocol.lastBodyJSON)
@@ -118,6 +119,7 @@ final class LivenessAPITests: XCTestCase {
         let variables = try XCTUnwrap(body["variables"] as? [String: Any])
         let input = try XCTUnwrap(variables["input"] as? [String: Any])
         XCTAssertEqual(input["userRef"] as? String, "test_001")
+        XCTAssertEqual(input["processToken"] as? String, "pt_001")
         XCTAssertEqual(input["levelSlug"] as? String, "tier_1")
         XCTAssertEqual(input["challengesPerSession"] as? Int, 3)
         XCTAssertEqual(input["kycType"] as? String, "face_match_nin")
