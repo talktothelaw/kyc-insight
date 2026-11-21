@@ -129,6 +129,7 @@ public final class LivenessAPI {
         public let deviceMeta: LivenessDeviceMetaInput?
         public let challengesPerSession: Int?
         public let kycType: String?
+        public let processToken: String?
 
         public init(
             userRef: String? = nil,
@@ -140,7 +141,8 @@ public final class LivenessAPI {
             providerId: String? = nil,
             deviceMeta: LivenessDeviceMetaInput? = nil,
             challengesPerSession: Int? = nil,
-            kycType: String? = nil
+            kycType: String? = nil,
+            processToken: String? = nil
         ) {
             self.userRef = userRef
             self.customerId = customerId
@@ -152,6 +154,7 @@ public final class LivenessAPI {
             self.deviceMeta = deviceMeta
             self.challengesPerSession = challengesPerSession
             self.kycType = kycType
+            self.processToken = processToken
         }
     }
 
@@ -163,6 +166,7 @@ public final class LivenessAPI {
         """
         var inputDict: [String: Any] = [:]
         if let v = input.userRef            { inputDict["userRef"] = v }
+        if let v = input.processToken, !v.isEmpty { inputDict["processToken"] = v }
         if let v = input.customerId         { inputDict["customerId"] = v }
         if let v = input.kycSubmissionId    { inputDict["kycSubmissionId"] = v }
         if let v = input.levelSlug          { inputDict["levelSlug"] = v }

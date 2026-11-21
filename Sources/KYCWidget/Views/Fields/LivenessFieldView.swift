@@ -52,7 +52,8 @@ struct LivenessFieldView: View {
                     cameraLabel: "front"
                 ),
                 challengesPerSession: challengesPerSession,
-                kycType: field.kycType
+                kycType: field.kycType,
+                processToken: session.schema?.processToken
             ),
             commit: { [weak session] value in session?.setValue(value ?? .null, for: fieldID) },
             onVerdict: { [weak session] result in
